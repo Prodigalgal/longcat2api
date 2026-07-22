@@ -382,11 +382,11 @@ async function trySolveYoda(page, onLog) {
     return { handled: false, error: 'AI could not extract connect-dot points' };
   }
 
-  const title = await page.locator('.sudoku-title').first().innerText().catch(async () => {
+  const sudokuTitle = await page.locator('.sudoku-title').first().innerText().catch(async () => {
     return page.locator('.yoda-modal-content').first().innerText().catch(() => '');
   });
-  log(onLog, `Yoda title: ${(title || '').slice(0, 80)}`);
-  const needTap = /tap icons|点选|按顺序点击|following order/i.test(title || '');
+  log(onLog, `Yoda sudoku title: ${(sudokuTitle || '').slice(0, 80)}`);
+  const needTap = /tap icons|点选|按顺序点击|following order/i.test(sudokuTitle || '');
   const needDrag = !needTap;
   const xy = points.map(([rx, ry]) => [
     mapBox.x + Math.min(0.98, Math.max(0.02, rx)) * mapBox.width,
