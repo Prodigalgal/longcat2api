@@ -295,17 +295,22 @@ function attachNetworkWatch(page, state) {
   page.on('response', async (res) => {
     try {
       const u = res.url();
-      if (!/emaillogin|emailsignup|userriskcheck|yoda/i.test(u)) return;
+      // only business APIs on passport host (ignore CDN yoda.global.js etc.)
+      if (!/passport\.mykeeta\.com\/api\//i.test(u)) return;
       const status = res.status();
       let body = '';
       try {
-        body = (await res.text()).slice(0, 300);
+        body = (await res.text()).slice(0, 400);
       } catch {
         /* ignore */
       }
-      state.apiLogs.push({ u: u.slice(0, 120), status, body: body.slice(0, 200) });
+      state.apiLogs.push({ u: u.slice(0, 160), status, body: body.slice(0, 240) });
+      if (/userriskcheck/i.test(u) && status >= 200 && status < 300) {
+        state.riskOk = true;
+        if (/user_ticket|userTicket|ticket/i.test(body)) state.gotTicket = true;
+      }
       if (/emailloginapply|emailsignupapply/i.test(u) && status >= 200 && status < 300) {
-        if (!/error|fail/i.test(body) || /serialNumber|serial_number|ticket/i.test(body)) {
+        if (/serialNumber|serial_number/i.test(body) || !/"error"\s*:/.test(body)) {
           state.applyOk = true;
         }
       }
@@ -381,7 +386,7 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
   page.setDefaultTimeout(SLOW.actionMs);
   page.setDefaultNavigationTimeout(SLOW.gotoMs);
 
-  const net = { apiLogs: [], applyOk: false, got403: false };
+  const net = { apiLogs: [], applyOk: false, got403: false, riskOk: false, gotTicket: false };
   attachNetworkWatch(page, net);
 
   const deadline = Date.now() + timeoutMs;
@@ -417,29 +422,59 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
       /* ignore */
     }
 
-    log(onLog, 'fill email...');
-    await fillEmail(page, email);
-    await sleep(800);
-    await clickContinue(page);
-    await sleep(SLOW.afterClickMs);
-
-    // Challenge? try wait first, AI last
-    let ch = await trySolveChallenge(page, onLog);
-    if (ch.error) log(onLog, `challenge: ${ch.error}`);
-
-    // Retry continue once if still on email page
-    const stillEmail = await page.locator('.login-email-input-container input, input[type="email"]').isVisible().catch(() => false);
-    if (stillEmail) {
-      log(onLog, 'still on email step — click continue again (slow UI)...');
-      await clickContinue(page);
-      await sleep(SLOW.afterClickMs);
-      ch = await trySolveChallenge(page, onLog);
+    // Accept terms if checkbox present
+    try {
+      const boxes = page.locator('input[type="checkbox"]');
+      const n = await boxes.count();
+      for (let i = 0; i < n; i++) {
+        const b = boxes.nth(i);
+        if (await b.isVisible().catch(() => false)) {
+          const checked = await b.isChecked().catch(() => false);
+          if (!checked) {
+            await b.check({ force: true }).catch(async () => {
+              await b.click({ force: true });
+            });
+            log(onLog, 'checked agreement checkbox');
+          }
+        }
+      }
+    } catch {
+      /* ignore */
     }
 
-    log(onLog, `network: applyOk=${net.applyOk} got403=${net.got403} logs=${net.apiLogs.length}`);
+    log(onLog, 'fill email...');
+    await fillEmail(page, email);
+    await sleep(1200);
+
+    // Multi-attempt continue until risk/apply API or OTP UI
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      log(onLog, `click continue attempt ${attempt}/4...`);
+      await clickContinue(page);
+      await sleep(SLOW.afterClickMs + attempt * 1500);
+      let ch = await trySolveChallenge(page, onLog);
+      if (ch.error) log(onLog, `challenge: ${ch.error}`);
+      if (ch.handled) await sleep(3000);
+
+      const otpMaybe = await page
+        .locator(
+          '.pc-login-verify-code-container, .verify-code-input, input[inputmode="numeric"], input[maxlength="6"]'
+        )
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (otpMaybe || net.applyOk || net.riskOk) {
+        log(onLog, `progress: otpUI=${otpMaybe} riskOk=${net.riskOk} applyOk=${net.applyOk}`);
+        break;
+      }
+    }
+
+    log(
+      onLog,
+      `network: riskOk=${net.riskOk} applyOk=${net.applyOk} got403=${net.got403} logs=${net.apiLogs.length}`
+    );
     if (net.apiLogs.length) {
-      for (const L of net.apiLogs.slice(-6)) {
-        log(onLog, `  api ${L.status} ${L.u} ${L.body.slice(0, 80)}`);
+      for (const L of net.apiLogs.slice(-8)) {
+        log(onLog, `  api ${L.status} ${L.u} ${L.body.slice(0, 100)}`);
       }
     }
 

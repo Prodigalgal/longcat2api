@@ -392,7 +392,9 @@
       try {
         const r = await api('/api/account/auto-register', { method: 'POST', body: '{}' });
         $('regLog').textContent = JSON.stringify(r, null, 2);
-        loadAccounts();
+        toast(r.job_id ? '后台注册中: ' + r.job_id : (r.message || 'ok'));
+        if (r.job_id) pollJob(r.job_id);
+        else loadAccounts();
       } catch (e) { toast(e.message); }
     };
     $('btnBatchReg').onclick = async () => {

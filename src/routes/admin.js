@@ -367,10 +367,22 @@ router.post('/api/account/prepare-mailbox', async (_req, res) => {
 });
 
 router.post('/api/account/auto-register', async (req, res) => {
+  // Async: Cloudflare/gateway 524 if we block 7 minutes. Return job_id immediately.
   try {
     const soft = !!(req.body && req.body.soft_fail);
-    const r = await runOneRegisterAttempt({ soft_fail: soft });
-    res.status(r.ok ? 200 : 400).json(r);
+    const job = startBatchRegisterJob({
+      success_target: 1,
+      max_attempts: 1,
+      concurrent: 1,
+      soft_fail: soft,
+    });
+    res.json({
+      ok: true,
+      async: true,
+      job_id: job.id,
+      message: '全自动注册已后台启动（约 3–8 分钟）。请轮询 GET /api/account/auto-register-batch/{job_id}',
+      poll: `/api/account/auto-register-batch/${job.id}`,
+    });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
