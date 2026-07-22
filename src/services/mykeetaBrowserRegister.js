@@ -17,7 +17,8 @@ import { config } from '../config.js';
 import { createAddress, isTempMailConfigured, waitForCode } from './tempMail.js';
 import { buildLoginPageUrl, MYKEETA } from './mykeetaClient.js';
 import { getProxyUrl, startProxy, proxyStatus, rotateProxy } from './proxyPool.js';
-import { getCaptchaAiConfig, solveCaptchaWithAi, solveYodaSudokuWithAi } from './captchaAi.js';
+import { getCaptchaAiConfig, solveYodaSudokuWithAi } from './captchaAi.js';
+import { detectSlider, solveSliderTraditional } from './sliderCaptcha.js';
 
 const SLOW = {
   gotoMs: envInt('LONGCAT2API_REG_GOTO_MS', 120000),
@@ -252,57 +253,109 @@ async function waitCanvasReady(page) {
 }
 
 /**
- * Yoda connect-dots / sudoku: wait first; AI last resort.
- * AI returns POINTS as x,y ratios relative to canvas.
+ * Yoda multi-type:
+ *  1) classic SLIDER  → traditional gap+drag (NO AI) — preferred / what users often see
+ *  2) connect-dots / tap-icons → AI last resort only
  */
 async function trySolveYoda(page, onLog) {
   const body = await page.locator('body').innerText().catch(() => '');
-  const yodaVisible = await page.locator('#yodaVerify, .yoda-verify-container, .yoda-sudoku-wrap, .sudoku-canvas').first().isVisible().catch(() => false);
-  if (!yodaVisible && !/tap icons|connect the dots|shortest line|安全验证|yoda/i.test(body)) {
+  const yodaVisible = await page
+    .locator(
+      '#yodaVerify, .yoda-verify-container, .yoda-sudoku-wrap, .sudoku-canvas, .yoda-slider-wrapper, [class*="slider"]'
+    )
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (
+    !yodaVisible &&
+    !/tap icons|connect the dots|shortest line|安全验证|yoda|滑块|拖动|slide/i.test(body)
+  ) {
     return { handled: false };
   }
 
-  log(onLog, 'Yoda challenge detected — wait 5s (no AI yet)...');
-  await sleep(5000);
-  const still = await page.locator('#yodaVerify, .yoda-sudoku-wrap, canvas.sudoku-canvas').first().isVisible().catch(() => false);
+  log(onLog, 'Yoda challenge detected — wait 3s...');
+  await sleep(3000);
+  const still = await page
+    .locator('#yodaVerify, .yoda-sudoku-wrap, canvas.sudoku-canvas, .yoda-slider-wrapper, [class*="slider-btn"]')
+    .first()
+    .isVisible()
+    .catch(() => false);
   if (!still) {
-    log(onLog, 'Yoda gone without AI');
+    log(onLog, 'Yoda gone without solver');
     return { handled: true, method: 'wait' };
   }
 
-  // refresh once (non-AI)
+  const title = await page.locator('.sudoku-title, .yoda-modal-content, .yoda-slider-wrapper').first().innerText().catch(() => body);
+  log(onLog, `Yoda title/body: ${(title || '').slice(0, 100)}`);
+
+  // ---------- 1) SLIDER: traditional library-style (NO AI) ----------
+  const sliderDet = await detectSlider(page);
+  const looksSlider =
+    !!sliderDet ||
+    /滑块|拖动|向右滑动|slide to|drag the slider|hold the slider/i.test(title || body);
+  const looksSudoku = /connect the dots|shortest line|tap icons|following order|sudoku/i.test(
+    title || body
+  );
+
+  if (looksSlider && !looksSudoku) {
+    log(onLog, 'Yoda type=SLIDER → traditional solver (no AI)');
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = await solveSliderTraditional(page, (m) => log(onLog, m));
+      if (r.ok) {
+        log(onLog, `slider solved attempt=${attempt} dist=${r.distance} method=${r.method}`);
+        return { handled: true, method: r.method };
+      }
+      log(onLog, `slider attempt ${attempt} fail: ${r.error}`);
+      try {
+        await page.locator('.sudoku-operate-refresh, img[alt="refresh"], [class*="refresh"]').first().click({ timeout: 1500 });
+        await sleep(2500);
+      } catch {
+        /* ignore */
+      }
+    }
+    // slider failed: do NOT jump to AI for pure slider (user request)
+    return { handled: false, error: 'traditional slider failed after retries' };
+  }
+
+  // ---------- 2) connect-dots / tap-icons: AI last resort only ----------
   try {
     const refresh = page.locator('.sudoku-operate-refresh, img[alt="refresh"]').first();
     if (await refresh.isVisible({ timeout: 1500 })) {
       await refresh.click();
       log(onLog, 'clicked yoda refresh');
-      await sleep(4000);
+      await sleep(3500);
     }
   } catch {
     /* ignore */
   }
 
+  // If slider UI mixed with sudoku, try traditional slider once first (still no AI)
+  if (await detectSlider(page)) {
+    log(onLog, 'slider UI also present — try traditional first');
+    const r = await solveSliderTraditional(page, (m) => log(onLog, m));
+    if (r.ok) return { handled: true, method: r.method };
+  }
+
   const ca = getCaptchaAiConfig();
   if (!ca.ready) {
-    return { handled: false, error: 'Yoda present; captcha_ai not enabled (last-resort only)' };
+    return {
+      handled: false,
+      error: 'non-slider Yoda present; captcha_ai not enabled (AI is last-resort only for sudoku/tap)',
+    };
   }
 
   log(onLog, 'waiting Yoda canvas (slow load)...');
   let canvas = await waitCanvasReady(page);
   let box = await canvas.boundingBox().catch(() => null);
-
-  // Prefer canvas box; fallback to sudoku-image / modal content
   if (!box || box.width < 40) {
     const area = page.locator('.sudoku-image, .yoda-sudoku-wrap, .yoda-modal-content').first();
     box = await area.boundingBox().catch(() => null);
-    log(onLog, `canvas box fallback area=${box ? `${box.width}x${box.height}` : 'null'}`);
   }
   if (!box) {
     return { handled: false, error: 'Yoda canvas/area not ready' };
   }
 
-  log(onLog, 'AI captcha fallback for Yoda sudoku (last resort)...');
-  // Map AI ratios onto the SAME element we screenshot (modal), not canvas-only box
+  log(onLog, 'AI captcha fallback for Yoda sudoku/tap (last resort only)...');
   const shotLoc = page.locator('.yoda-modal-content, .yoda-sudoku-wrap, #yodaVerify').first();
   let mapBox = (await shotLoc.boundingBox().catch(() => null)) || box;
 
@@ -313,7 +366,7 @@ async function trySolveYoda(page, onLog) {
     const ai = await solveYodaSudokuWithAi(shot);
     if (ai.ok && ai.points?.length >= 2) {
       points = ai.points;
-      log(onLog, `AI points (round ${round})=${JSON.stringify(points)} mapBox=${Math.round(mapBox.width)}x${Math.round(mapBox.height)}`);
+      log(onLog, `AI points (round ${round})=${JSON.stringify(points)}`);
       break;
     }
     log(onLog, `AI sudoku parse round ${round}: ${ai.error || ai.raw || 'no points'}`);
@@ -333,7 +386,6 @@ async function trySolveYoda(page, onLog) {
     return page.locator('.yoda-modal-content').first().innerText().catch(() => '');
   });
   log(onLog, `Yoda title: ${(title || '').slice(0, 80)}`);
-  // connect-the-dots → drag; only pure "tap icons" uses discrete clicks
   const needTap = /tap icons|点选|按顺序点击|following order/i.test(title || '');
   const needDrag = !needTap;
   const xy = points.map(([rx, ry]) => [
@@ -342,8 +394,7 @@ async function trySolveYoda(page, onLog) {
   ]);
 
   if (needDrag && xy.length >= 2) {
-    log(onLog, 'Yoda mode=drag-connect');
-    // slight press-and-hold then smooth polyline
+    log(onLog, 'Yoda mode=drag-connect (AI last resort)');
     await page.mouse.move(xy[0][0], xy[0][1]);
     await sleep(100);
     await page.mouse.down();
@@ -354,39 +405,20 @@ async function trySolveYoda(page, onLog) {
     await sleep(120);
     await page.mouse.up();
   } else {
-    log(onLog, 'Yoda mode=tap-sequence');
+    log(onLog, 'Yoda mode=tap-sequence (AI last resort)');
     for (const [x, y] of xy) {
       await page.mouse.click(x, y, { delay: 50 });
       await sleep(320);
     }
   }
 
-  // Wait for success — do NOT trust mere invisibility (false positives)
-  let successIcon = false;
   for (let i = 0; i < 24; i++) {
     await sleep(500);
-    successIcon = await page.locator('.icon-success:visible, .yoda-sudoku-wrap .success').first().isVisible().catch(() => false);
-    if (successIcon) {
-      log(onLog, 'Yoda success icon shown');
-      await sleep(2000);
-      break;
-    }
-    // modal closed AND body no longer mentions challenge
-    const modal = await page.locator('.yoda-sudoku-wrap, #yodaVerify .yoda-modal-content, canvas.sudoku-canvas').first().isVisible().catch(() => false);
     const body2 = await page.locator('body').innerText().catch(() => '');
-    if (!modal && !/connect the dots|tap icons|shortest line|安全验证/i.test(body2)) {
-      log(onLog, 'Yoda modal gone + prompt gone');
+    if (!/connect the dots|tap icons|shortest line|滑块|slide/i.test(body2)) {
+      log(onLog, 'Yoda prompt gone after AI path');
       return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
     }
-  }
-
-  const body3 = await page.locator('body').innerText().catch(() => '');
-  if (!/connect the dots|tap icons|shortest line/i.test(body3) && successIcon) {
-    return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
-  }
-  if (!/connect the dots|tap icons|shortest line/i.test(body3)) {
-    log(onLog, 'Yoda prompt gone after AI path');
-    return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
   }
   return { handled: false, error: 'Yoda still visible after AI path' };
 }

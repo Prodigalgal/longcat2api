@@ -291,7 +291,8 @@ Content-Type: application/json
 | reason/search 模型别名 | ✅ 已实现 |
 | Cookie 导入 / 探测保活 | ✅ 已实现 |
 | 免登 oversea | ❌ 已关闭 |
-| mykeeta 海外邮箱全自动注册 | ✅ Playwright + Temp Mail；慢站点长超时；**AI 打码仅最后兜底** |
+| mykeeta 海外邮箱全自动注册 | ✅ Playwright + Temp Mail；**滑块用传统轨迹/缺口检测（不用 AI）**；连线/点选才可能 AI 兜底 |
+| Yoda 题型 | 风控随机：**滑块 / 连棕点 / 点图标** 都会出现（自动化环境更常出后两种） |
 | 过期自动邮箱 OTP 重登 | ⏳ 可扩展 |
 | 思考多档 effort | ❌ 上游只有 0/1 |
 
