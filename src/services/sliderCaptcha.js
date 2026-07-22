@@ -205,7 +205,11 @@ async function detectSliderImpl(page) {
     return { kind: 'slider', handle: null, selector: `heuristic:${pos.cls}`, start: { x: pos.x, y: pos.y } };
   }
 
-  if (/滑块|向右滑动|拖动|slide to|drag the slider/i.test(body)) {
+  if (
+    /滑块|向右滑动|拖动|move the slider|slider below|complete the puzzle|slide to|drag the slider/i.test(
+      body
+    )
+  ) {
     return { kind: 'slider_text', handle: null, selector: 'text' };
   }
   return null;

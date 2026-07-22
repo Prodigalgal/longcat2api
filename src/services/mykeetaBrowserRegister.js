@@ -296,15 +296,22 @@ async function trySolveYoda(page, onLog) {
     const looksSudoku = /connect the dots|shortest line|tap icons|following order|sudoku/i.test(
       titleNow || ''
     );
-    const looksSlider =
-      (!!sliderDet && !looksSudoku) ||
-      /滑块|向右滑动|拖动滑块|slide to|drag the slider|hold the slider/i.test(titleNow || body);
+    // English Yoda: "Please move the slider below to complete the puzzle"
+    const looksSliderText =
+      /滑块|向右滑动|拖动滑块|move the slider|slider below|complete the puzzle|slide to|drag the slider|hold the slider|slide the|拖动下面/i.test(
+        titleNow || body
+      );
+    const looksSlider = (!!sliderDet && !looksSudoku) || (looksSliderText && !looksSudoku);
 
-    log(onLog, `Yoda probe#${rotate}: slider=${!!sliderDet} sudoku=${looksSudoku} title=${(titleNow || '').slice(0, 60)}`);
+    log(
+      onLog,
+      `Yoda probe#${rotate}: det=${!!sliderDet} sliderText=${looksSliderText} sudoku=${looksSudoku} title=${(titleNow || '').slice(0, 70)}`
+    );
 
-    if (looksSlider || (!!sliderDet && !looksSudoku)) {
+    // Prefer traditional slider whenever title/UI indicates slider (even if handle selector miss)
+    if (looksSlider || looksSliderText) {
       log(onLog, 'Yoda type=SLIDER → traditional gap+drag (NO AI)');
-      for (let attempt = 1; attempt <= 4; attempt++) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
         const r = await solveSliderTraditional(page, (m) => log(onLog, m));
         if (r.ok) {
           log(onLog, `slider OK attempt=${attempt} dist=${r.distance}`);
@@ -312,13 +319,17 @@ async function trySolveYoda(page, onLog) {
         }
         log(onLog, `slider fail ${attempt}: ${r.error}`);
         try {
-          await page.locator('.sudoku-operate-refresh, img[alt="refresh"], [class*="refresh"]').first().click({ timeout: 1500 });
+          await page
+            .locator('.sudoku-operate-refresh, img[alt="refresh"], [class*="refresh"]')
+            .first()
+            .click({ timeout: 1500 });
           await sleep(2800);
         } catch {
           /* ignore */
         }
       }
-      // keep refreshing for another slider instance
+      // if title says slider but solver failed, still don't fall through to AI immediately —
+      // refresh and try again next loop
     }
 
     // Not slider (or slider failed): try refresh to roll a slider type
