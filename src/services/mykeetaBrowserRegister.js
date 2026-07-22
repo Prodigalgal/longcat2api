@@ -302,25 +302,25 @@ async function trySolveYoda(page, onLog) {
   }
 
   log(onLog, 'AI captcha fallback for Yoda sudoku (last resort)...');
-  const shot = await page
-    .locator('.yoda-modal-content, .yoda-sudoku-wrap, #yodaVerify')
-    .first()
-    .screenshot({ type: 'png' })
-    .catch(() => page.screenshot({ type: 'png' }));
+  // Map AI ratios onto the SAME element we screenshot (modal), not canvas-only box
+  const shotLoc = page.locator('.yoda-modal-content, .yoda-sudoku-wrap, #yodaVerify').first();
+  let mapBox = (await shotLoc.boundingBox().catch(() => null)) || box;
 
-  // Up to 2 AI attempts with refresh between
   let points = null;
-  for (let round = 1; round <= 2; round++) {
+  for (let round = 1; round <= 3; round++) {
+    const shot = await shotLoc.screenshot({ type: 'png' }).catch(() => page.screenshot({ type: 'png' }));
+    mapBox = (await shotLoc.boundingBox().catch(() => null)) || mapBox || box;
     const ai = await solveYodaSudokuWithAi(shot);
-    if (ai.ok && ai.points?.length) {
+    if (ai.ok && ai.points?.length >= 2) {
       points = ai.points;
-      log(onLog, `AI points (round ${round})=${JSON.stringify(points)}`);
+      log(onLog, `AI points (round ${round})=${JSON.stringify(points)} mapBox=${Math.round(mapBox.width)}x${Math.round(mapBox.height)}`);
       break;
     }
     log(onLog, `AI sudoku parse round ${round}: ${ai.error || ai.raw || 'no points'}`);
     try {
       await page.locator('.sudoku-operate-refresh, img[alt="refresh"]').first().click({ timeout: 2000 });
-      await sleep(3500);
+      await sleep(4000);
+      canvas = await waitCanvasReady(page);
     } catch {
       /* ignore */
     }
@@ -333,12 +333,12 @@ async function trySolveYoda(page, onLog) {
     return page.locator('.yoda-modal-content').first().innerText().catch(() => '');
   });
   log(onLog, `Yoda title: ${(title || '').slice(0, 80)}`);
-  // connect-the-dots / shortest line → always drag; only pure "tap icons" uses clicks
+  // connect-the-dots → drag; only pure "tap icons" uses discrete clicks
   const needTap = /tap icons|点选|按顺序点击|following order/i.test(title || '');
   const needDrag = !needTap;
   const xy = points.map(([rx, ry]) => [
-    box.x + Math.min(0.98, Math.max(0.02, rx)) * box.width,
-    box.y + Math.min(0.98, Math.max(0.02, ry)) * box.height,
+    mapBox.x + Math.min(0.98, Math.max(0.02, rx)) * mapBox.width,
+    mapBox.y + Math.min(0.98, Math.max(0.02, ry)) * mapBox.height,
   ]);
 
   if (needDrag && xy.length >= 2) {
