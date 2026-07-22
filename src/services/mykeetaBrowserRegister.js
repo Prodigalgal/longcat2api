@@ -329,10 +329,13 @@ async function trySolveYoda(page, onLog) {
     return { handled: false, error: 'AI could not extract connect-dot points' };
   }
 
-  // "connect the dots" needs a continuous drag, not discrete clicks
-  const title = await page.locator('.sudoku-title, .yoda-modal-content').first().innerText().catch(() => '');
-  // default drag for connect-dots; tap only if clearly "tap icons"
-  const needDrag = !/tap icons|点选|按顺序点击/i.test(title || '');
+  const title = await page.locator('.sudoku-title').first().innerText().catch(async () => {
+    return page.locator('.yoda-modal-content').first().innerText().catch(() => '');
+  });
+  log(onLog, `Yoda title: ${(title || '').slice(0, 80)}`);
+  // connect-the-dots / shortest line → always drag; only pure "tap icons" uses clicks
+  const needTap = /tap icons|点选|按顺序点击|following order/i.test(title || '');
+  const needDrag = !needTap;
   const xy = points.map(([rx, ry]) => [
     box.x + Math.min(0.98, Math.max(0.02, rx)) * box.width,
     box.y + Math.min(0.98, Math.max(0.02, ry)) * box.height,
@@ -340,48 +343,49 @@ async function trySolveYoda(page, onLog) {
 
   if (needDrag && xy.length >= 2) {
     log(onLog, 'Yoda mode=drag-connect');
+    // slight press-and-hold then smooth polyline
     await page.mouse.move(xy[0][0], xy[0][1]);
+    await sleep(100);
     await page.mouse.down();
     for (let i = 1; i < xy.length; i++) {
-      await page.mouse.move(xy[i][0], xy[i][1], { steps: 12 });
-      await sleep(80);
+      await page.mouse.move(xy[i][0], xy[i][1], { steps: 18 });
+      await sleep(60);
     }
+    await sleep(120);
     await page.mouse.up();
   } else {
     log(onLog, 'Yoda mode=tap-sequence');
     for (const [x, y] of xy) {
-      await page.mouse.click(x, y);
-      await sleep(280);
+      await page.mouse.click(x, y, { delay: 50 });
+      await sleep(320);
     }
   }
 
-  // Wait for success animation / modal close (slow network)
-  for (let i = 0; i < 20; i++) {
+  // Wait for success — do NOT trust mere invisibility (false positives)
+  let successIcon = false;
+  for (let i = 0; i < 24; i++) {
     await sleep(500);
-    const visible = await page
-      .locator('.yoda-sudoku-wrap:visible, canvas.sudoku-canvas:visible, .yoda-verify-container.mask:visible')
-      .first()
-      .isVisible()
-      .catch(() => false);
-    const success = await page.locator('.icon-success:visible').first().isVisible().catch(() => false);
-    if (success) {
+    successIcon = await page.locator('.icon-success:visible, .yoda-sudoku-wrap .success').first().isVisible().catch(() => false);
+    if (successIcon) {
       log(onLog, 'Yoda success icon shown');
-      await sleep(1500);
+      await sleep(2000);
       break;
     }
-    if (!visible) {
-      log(onLog, 'Yoda cleared after AI path');
+    // modal closed AND body no longer mentions challenge
+    const modal = await page.locator('.yoda-sudoku-wrap, #yodaVerify .yoda-modal-content, canvas.sudoku-canvas').first().isVisible().catch(() => false);
+    const body2 = await page.locator('body').innerText().catch(() => '');
+    if (!modal && !/connect the dots|tap icons|shortest line|安全验证/i.test(body2)) {
+      log(onLog, 'Yoda modal gone + prompt gone');
       return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
     }
   }
 
-  const stillVisible = await page
-    .locator('.yoda-sudoku-wrap, canvas.sudoku-canvas')
-    .first()
-    .isVisible()
-    .catch(() => false);
-  if (!stillVisible) {
-    log(onLog, 'Yoda cleared after AI path');
+  const body3 = await page.locator('body').innerText().catch(() => '');
+  if (!/connect the dots|tap icons|shortest line/i.test(body3) && successIcon) {
+    return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
+  }
+  if (!/connect the dots|tap icons|shortest line/i.test(body3)) {
+    log(onLog, 'Yoda prompt gone after AI path');
     return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
   }
   return { handled: false, error: 'Yoda still visible after AI path' };
