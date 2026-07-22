@@ -21,11 +21,24 @@ export function requireApiKey(req, res, next) {
   next();
 }
 
+function adminUnauthorized(req, res) {
+  // Single browser Basic challenge — no separate SPA login form.
+  res.set('WWW-Authenticate', 'Basic realm="longcat2api", charset="UTF-8"');
+  const wantsHtml =
+    req.method === 'GET' &&
+    (req.accepts(['html', 'json']) === 'html' ||
+      String(req.headers.accept || '').includes('text/html'));
+  if (wantsHtml) {
+    return res.status(401).type('text/plain').send('Unauthorized');
+  }
+  return res.status(401).json({ error: 'Unauthorized' });
+}
+
+/** HTTP Basic only (user fixed: admin). Used for admin UI + /api/* management. */
 export function requireAdmin(req, res, next) {
   const header = req.headers.authorization || '';
   if (!header.startsWith('Basic ')) {
-    res.set('WWW-Authenticate', 'Basic realm="longcat2api"');
-    return res.status(401).json({ error: 'Unauthorized' });
+    return adminUnauthorized(req, res);
   }
   try {
     const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
@@ -33,12 +46,10 @@ export function requireAdmin(req, res, next) {
     const user = i >= 0 ? decoded.slice(0, i) : decoded;
     const pass = i >= 0 ? decoded.slice(i + 1) : '';
     if (user !== 'admin' || pass !== config.getAdminPassword()) {
-      res.set('WWW-Authenticate', 'Basic realm="longcat2api"');
-      return res.status(401).json({ error: 'Unauthorized' });
+      return adminUnauthorized(req, res);
     }
     next();
   } catch {
-    res.set('WWW-Authenticate', 'Basic realm="longcat2api"');
-    return res.status(401).json({ error: 'Unauthorized' });
+    return adminUnauthorized(req, res);
   }
 }

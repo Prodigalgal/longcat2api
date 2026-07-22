@@ -71,33 +71,14 @@
       background: #0d1218; border: 1px solid var(--border); border-radius: 8px;
       padding: 12px; max-height: 280px; overflow: auto; font-size: 12px; white-space: pre-wrap;
     }
-    .login-mask {
-      position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 100;
-    }
-    .login-box {
-      width: 360px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px;
-    }
     .muted { color: var(--muted); font-size: 12px; }
     h2 { font-size: 15px; margin: 0 0 8px; }
     h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); font-weight: 500; }
   </style>
 </head>
 <body>
-  <div id="loginMask" class="login-mask">
-    <div class="login-box">
-      <h2>管理员登录</h2>
-      <p class="muted">HTTP Basic：用户名 <code>admin</code>，密码为配置中的 admin_password</p>
-      <label>密码</label>
-      <input id="adminPass" type="password" placeholder="admin" />
-      <div class="actions">
-        <button class="btn" id="btnLogin">进入面板</button>
-      </div>
-      <p id="loginErr" class="muted" style="color:var(--err)"></p>
-    </div>
-  </div>
-
   <header>
-    <h1>longcat2api <span class="badge">Node.js · SQLite</span></h1>
+    <h1>longcat2api <span class="badge">Node.js · SQLite · HTTP Basic</span></h1>
     <div class="badge" id="healthInfo">—</div>
   </header>
 
@@ -289,7 +270,8 @@
   <div id="toast"></div>
 
   <script>
-    let auth = sessionStorage.getItem('lc_admin_auth') || '';
+    // Auth: browser HTTP Basic only (server challenges once for panel + /api).
+    // No second SPA login form — credentials ride on same-origin requests.
 
     const $ = (id) => document.getElementById(id);
     const toast = (msg) => {
@@ -301,42 +283,25 @@
 
     async function api(path, opts = {}) {
       const headers = Object.assign(
-        { 'Content-Type': 'application/json', Authorization: auth },
+        { 'Content-Type': 'application/json' },
         opts.headers || {}
       );
-      const res = await fetch(path, { ...opts, headers });
+      // Do not set Authorization manually — browser reuses Basic for this origin.
+      const res = await fetch(path, {
+        ...opts,
+        headers,
+        credentials: 'same-origin',
+      });
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
-      if (res.status === 401) throw new Error('Unauthorized');
+      if (res.status === 401) {
+        // Re-trigger browser Basic if session expired
+        throw new Error('Unauthorized — 请刷新页面并用 Basic 重新认证 (admin)');
+      }
       if (!res.ok && data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message || text);
       if (!res.ok && data.message) throw new Error(data.message);
       return data;
-    }
-
-    function showApp() {
-      $('loginMask').style.display = 'none';
-      refreshAll();
-    }
-
-    $('btnLogin').onclick = async () => {
-      const pass = $('adminPass').value || 'admin';
-      auth = 'Basic ' + btoa('admin:' + pass);
-      try {
-        await api('/api/config');
-        sessionStorage.setItem('lc_admin_auth', auth);
-        $('loginErr').textContent = '';
-        showApp();
-      } catch (e) {
-        $('loginErr').textContent = '登录失败: ' + e.message;
-      }
-    };
-
-    if (auth) {
-      api('/api/config').then(showApp).catch(() => {
-        sessionStorage.removeItem('lc_admin_auth');
-        auth = '';
-      });
     }
 
     document.querySelectorAll('.tabs button').forEach((btn) => {
@@ -595,6 +560,9 @@
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
     }
+
+    // Panel already passed Basic when HTML was served; load data immediately.
+    refreshAll().catch((e) => toast(e.message || String(e)));
   </script>
 </body>
 </html>

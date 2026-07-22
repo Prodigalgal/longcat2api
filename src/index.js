@@ -6,6 +6,7 @@ import { config, paths } from './config.js';
 import { initDb } from './db/index.js';
 import openaiRoutes from './routes/openai.js';
 import adminRoutes from './routes/admin.js';
+import { requireAdmin } from './middleware/auth.js';
 import { startKeepaliveLoop, stopKeepaliveLoop } from './services/keepalive.js';
 import { reclaimProxy } from './services/proxyPool.js';
 
@@ -33,14 +34,24 @@ app.get('/health', (_req, res) => {
   });
 });
 
+// Public OpenAI-compatible API (+ /health above). No Basic admin here.
 app.use(openaiRoutes);
+
+// Admin API: HTTP Basic (username fixed: admin)
 app.use(adminRoutes);
 
-// static admin UI
+// Admin panel: same Basic challenge once in the browser — no SPA re-login.
 const publicDir = paths.public;
 if (fs.existsSync(publicDir)) {
-  app.use(express.static(publicDir));
-  app.get(['/', '/admin', '/admin/*'], (_req, res) => {
+  app.use((req, res, next) => {
+    // Only gate HTML/static UI; APIs already handled above.
+    if (req.path.startsWith('/api') || req.path.startsWith('/v1') || req.path === '/health') {
+      return next();
+    }
+    return requireAdmin(req, res, next);
+  });
+  app.use(express.static(publicDir, { index: 'index.html' }));
+  app.get(['/', '/admin', '/admin/*'], requireAdmin, (_req, res) => {
     res.sendFile(path.join(publicDir, 'index.html'));
   });
 }
