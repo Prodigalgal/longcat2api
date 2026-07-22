@@ -207,12 +207,21 @@ function buildSingboxConfig(nodes, listenPort, selectedTag) {
 }
 
 function findSingbox(explicit = '') {
-  if (explicit && fs.existsSync(explicit)) return explicit;
-  if (process.env.SING_BOX_PATH && fs.existsSync(process.env.SING_BOX_PATH)) {
-    return process.env.SING_BOX_PATH;
+  const candidates = [
+    explicit,
+    process.env.LONGCAT2API_PROXY_SINGBOX_PATH,
+    process.env.SING_BOX_PATH,
+    process.env.SINGBOX_PATH,
+    '/opt/sing-box/sing-box',
+    path.join(binDir(), process.platform === 'win32' ? 'sing-box.exe' : 'sing-box'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) return p;
+    } catch {
+      /* next */
+    }
   }
-  const local = path.join(binDir(), process.platform === 'win32' ? 'sing-box.exe' : 'sing-box');
-  if (fs.existsSync(local)) return local;
   try {
     const which = process.platform === 'win32' ? 'where sing-box' : 'which sing-box';
     const out = execSync(which, { encoding: 'utf8' }).trim().split(/\r?\n/)[0];

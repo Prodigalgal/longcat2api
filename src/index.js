@@ -13,30 +13,46 @@ import { reclaimProxy } from './services/proxyPool.js';
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
 
-// init
-fs.mkdirSync(paths.data, { recursive: true });
-// Playwright / chromium need a real writable TMP (readOnlyRootFilesystem + emptyDir /tmp)
-const tmpRoot = process.env.TMPDIR || process.env.TEMP || '/tmp';
-try {
-  fs.mkdirSync(tmpRoot, { recursive: true });
-  if (tmpRoot !== '/tmp') {
-    // also ensure classic /tmp for browser internals when TMPDIR is nested
-    fs.mkdirSync('/tmp', { recursive: true });
+// init — force writable tmp for Playwright under K8s readOnlyRootFilesystem
+// (emptyDir is mounted at /tmp; never nest under missing /tmp/longcat2api)
+process.env.TMPDIR = process.env.TMPDIR || '/tmp';
+process.env.TEMP = process.env.TEMP || '/tmp';
+process.env.TMP = process.env.TMP || '/tmp';
+process.env.HOME = process.env.HOME || '/tmp';
+process.env.PLAYWRIGHT_ARTIFACTS_DIR =
+  process.env.PLAYWRIGHT_ARTIFACTS_DIR || '/tmp/playwright-artifacts';
+process.env.PLAYWRIGHT_BROWSERS_PATH =
+  process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
+
+for (const d of [
+  paths.data,
+  process.env.TMPDIR,
+  process.env.PLAYWRIGHT_ARTIFACTS_DIR,
+  path.join(process.env.HOME || '/tmp', '.cache'),
+]) {
+  try {
+    fs.mkdirSync(d, { recursive: true });
+  } catch (e) {
+    console.warn('[startup] mkdir', d, e.message);
   }
-} catch (e) {
-  console.warn('[startup] tmp mkdir:', e.message);
-}
-// Prefer broad /tmp for playwright artifact dirs (avoid nested missing parent races)
-if (!process.env.PLAYWRIGHT_ARTIFACTS_DIR) {
-  process.env.PLAYWRIGHT_ARTIFACTS_DIR = '/tmp/playwright-artifacts';
-}
-try {
-  fs.mkdirSync(process.env.PLAYWRIGHT_ARTIFACTS_DIR, { recursive: true });
-} catch {
-  /* ignore */
 }
 initDb();
 config.load();
+
+// Register readiness (logged once)
+try {
+  const pw = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  const hasPw = pw && fs.existsSync(pw);
+  const sb =
+    process.env.LONGCAT2API_PROXY_SINGBOX_PATH ||
+    process.env.SING_BOX_PATH ||
+    '/opt/sing-box/sing-box';
+  console.log(
+    `[startup] register: browsersPath=${pw} exists=${!!hasPw} singbox=${sb} exists=${fs.existsSync(sb)} tmp=${process.env.TMPDIR}`
+  );
+} catch {
+  /* ignore */
+}
 
 const app = express();
 app.use(cors());
@@ -44,13 +60,47 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get('/health', (_req, res) => {
+  const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
+  const singbox =
+    process.env.LONGCAT2API_PROXY_SINGBOX_PATH ||
+    process.env.SING_BOX_PATH ||
+    '/opt/sing-box/sing-box';
+  let chromiumOk = false;
+  try {
+    if (fs.existsSync(browsersPath)) {
+      const walk = (dir, depth = 0) => {
+        if (depth > 4 || chromiumOk) return;
+        for (const name of fs.readdirSync(dir)) {
+          const p = path.join(dir, name);
+          let st;
+          try {
+            st = fs.statSync(p);
+          } catch {
+            continue;
+          }
+          if (st.isDirectory()) walk(p, depth + 1);
+          else if (/chrome$|chromium$|chrome-headless-shell$/i.test(name)) chromiumOk = true;
+        }
+      };
+      walk(browsersPath);
+    }
+  } catch {
+    /* ignore */
+  }
   res.json({
     status: 'ok',
     service: 'longcat2api',
-    version: '1.0.0',
+    version: '1.0.1',
     mode: config.getDefaultMode(),
     runtime: 'nodejs',
     sqlite: paths.sqlite,
+    register: {
+      playwright_browsers_path: browsersPath,
+      chromium_detected: chromiumOk,
+      singbox_path: singbox,
+      singbox_exists: fs.existsSync(singbox),
+      tmpdir: process.env.TMPDIR || '/tmp',
+    },
   });
 });
 
