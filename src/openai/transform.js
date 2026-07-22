@@ -78,7 +78,7 @@ export function buildPromptFromResponsesInput(body) {
   return '';
 }
 
-export function normalizeChatRequest(body, defaultMode = 'oversea') {
+export function normalizeChatRequest(body, _defaultMode = 'session') {
   const modelMeta = resolveModel(body.model);
   let reason = modelMeta.reason;
   let search = modelMeta.search;
@@ -86,11 +86,15 @@ export function normalizeChatRequest(body, defaultMode = 'oversea') {
   if (body.search_enabled != null) search = !!body.search_enabled;
   if (body.reasoning_effort && body.reasoning_effort !== 'none') reason = true;
 
-  // model suffix :cn / :oversea
-  let mode = defaultMode;
+  // Guest oversea chat is disabled — always logged-in session + cookie pool.
   const mid = String(body.model || '');
-  if (mid.endsWith(':cn') || body.mode === 'cn') mode = 'cn';
-  if (mid.endsWith(':oversea') || body.mode === 'oversea') mode = 'oversea';
+  if (mid.endsWith(':oversea') || body.mode === 'oversea') {
+    const err = new Error(
+      'oversea/guest mode is disabled; import a longcat.chat Cookie account and use session mode'
+    );
+    err.status = 400;
+    throw err;
+  }
 
   const prompt = buildPromptFromMessages(body.messages || []);
   return {
@@ -98,7 +102,7 @@ export function normalizeChatRequest(body, defaultMode = 'oversea') {
     agentId: modelMeta.agentId,
     reason,
     search,
-    mode,
+    mode: 'session',
     stream: !!body.stream,
     prompt,
     temperature: body.temperature,
@@ -107,22 +111,26 @@ export function normalizeChatRequest(body, defaultMode = 'oversea') {
   };
 }
 
-export function normalizeResponsesRequest(body, defaultMode = 'oversea') {
+export function normalizeResponsesRequest(body, _defaultMode = 'session') {
   const modelMeta = resolveModel(body.model);
   let reason = modelMeta.reason;
   let search = modelMeta.search;
   if (body.reasoning?.effort && body.reasoning.effort !== 'none') reason = true;
 
-  let mode = defaultMode;
-  if (body.mode === 'cn') mode = 'cn';
-  if (body.mode === 'oversea') mode = 'oversea';
+  if (body.mode === 'oversea') {
+    const err = new Error(
+      'oversea/guest mode is disabled; import a longcat.chat Cookie account and use session mode'
+    );
+    err.status = 400;
+    throw err;
+  }
 
   return {
     model: modelMeta.id,
     agentId: modelMeta.agentId,
     reason,
     search,
-    mode,
+    mode: 'session',
     stream: !!body.stream,
     prompt: buildPromptFromResponsesInput(body),
   };

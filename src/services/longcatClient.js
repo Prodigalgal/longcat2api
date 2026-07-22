@@ -172,10 +172,10 @@ export async function probeAccount(account, { proxyUrl } = {}) {
 }
 
 /**
- * Chat completion (collect full body). Supports oversea & cn modes.
+ * Chat completion (collect full body).
+ * Session-only: requires logged-in account Cookie (no guest oversea).
  */
 export async function chatCollect({
-  mode = 'oversea',
   account = null,
   content,
   agentId = '1',
@@ -186,30 +186,23 @@ export async function chatCollect({
   const proxyUrl = useProxy ? getProxyUrl() : null;
   const cookie = account ? accountCookieHeader(account) : '';
 
-  let url;
-  let payload;
-  if (mode === 'cn') {
-    if (!cookie) throw Object.assign(new Error('CN mode requires account cookie'), { status: 400 });
-    const session = await createSession(account, { agentId, proxyUrl });
-    const conversationId = session.conversationId;
-    if (!conversationId) throw new Error('No conversationId from session-create');
-    url = LONGCAT.cnV2;
-    payload = buildCnPayload({
-      content,
-      conversationId,
-      agentId,
-      reasonEnabled,
-      searchEnabled,
-    });
-  } else {
-    url = LONGCAT.overseaV2;
-    payload = buildOverseaPayload({
-      content,
-      agentId,
-      reasonEnabled,
-      searchEnabled,
-    });
+  if (!cookie) {
+    throw Object.assign(
+      new Error('session mode requires account cookie (passport_token_key)'),
+      { status: 503 }
+    );
   }
+  const session = await createSession(account, { agentId, proxyUrl });
+  const conversationId = session.conversationId;
+  if (!conversationId) throw new Error('No conversationId from session-create');
+  const url = LONGCAT.cnV2;
+  const payload = buildCnPayload({
+    content,
+    conversationId,
+    agentId,
+    reasonEnabled,
+    searchEnabled,
+  });
 
   const maxRateRetries = 3;
   let lastErr = '';
@@ -289,10 +282,10 @@ export async function chatCollect({
 }
 
 /**
- * Stream chat → async generator of parsed SSE results + raw openAI-ready deltas
+ * Stream chat → async generator of parsed SSE results
+ * Session-only (logged-in Cookie required).
  */
 export async function* chatStream({
-  mode = 'oversea',
   account = null,
   content,
   agentId = '1',
@@ -303,30 +296,23 @@ export async function* chatStream({
   const proxyUrl = useProxy ? getProxyUrl() : null;
   const cookie = account ? accountCookieHeader(account) : '';
 
-  let url;
-  let payload;
-  if (mode === 'cn') {
-    if (!cookie) throw Object.assign(new Error('CN mode requires account cookie'), { status: 400 });
-    const session = await createSession(account, { agentId, proxyUrl });
-    const conversationId = session.conversationId;
-    if (!conversationId) throw new Error('No conversationId');
-    url = LONGCAT.cnV2;
-    payload = buildCnPayload({
-      content,
-      conversationId,
-      agentId,
-      reasonEnabled,
-      searchEnabled,
-    });
-  } else {
-    url = LONGCAT.overseaV2;
-    payload = buildOverseaPayload({
-      content,
-      agentId,
-      reasonEnabled,
-      searchEnabled,
-    });
+  if (!cookie) {
+    throw Object.assign(
+      new Error('session mode requires account cookie (passport_token_key)'),
+      { status: 503 }
+    );
   }
+  const session = await createSession(account, { agentId, proxyUrl });
+  const conversationId = session.conversationId;
+  if (!conversationId) throw new Error('No conversationId');
+  const url = LONGCAT.cnV2;
+  const payload = buildCnPayload({
+    content,
+    conversationId,
+    agentId,
+    reasonEnabled,
+    searchEnabled,
+  });
 
   const res = await rawFetch(url, {
     method: 'POST',

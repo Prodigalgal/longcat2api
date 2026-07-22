@@ -44,7 +44,8 @@ function defaultSettings() {
   return {
     api_keys: env('LONGCAT2API_API_KEYS', env('API_KEYS', 'sk-longcat')),
     admin_password: env('LONGCAT2API_ADMIN_PASSWORD', env('ADMIN_PASSWORD', 'admin')),
-    default_mode: env('LONGCAT2API_DEFAULT_MODE', env('DEFAULT_MODE', 'oversea')),
+    // session = logged-in cookie pool only (no guest oversea chat)
+    default_mode: env('LONGCAT2API_DEFAULT_MODE', env('DEFAULT_MODE', 'session')),
     keepalive_interval_seconds: envInt(
       'LONGCAT2API_KEEPALIVE_INTERVAL_SECONDS',
       envInt('KEEPALIVE_INTERVAL_SECONDS', 21600, 300, 604800),
@@ -254,8 +255,9 @@ class ConfigStore {
   }
 
   getDefaultMode() {
-    const m = String(this.data.default_mode || 'oversea').toLowerCase();
-    return m === 'cn' ? 'cn' : 'oversea';
+    // Only logged-in session mode is supported (cookie accounts).
+    // Historical aliases: cn | session | login
+    return 'session';
   }
 
   getKeepaliveInterval() {

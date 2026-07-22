@@ -118,8 +118,7 @@ curl http://localhost:8080/v1/responses \
 | 主题 | 要点 |
 |------|------|
 | 海外注册 | `passport.mykeeta.com` 邮箱 OTP（非 meituan 国内手机） |
-| 免登对话 | `POST /api/v1/chat-completion-oversea-V2` |
-| 登录对话 | `session-create` + `chat-completion-V2` + Cookie |
+| 对话（唯一） | `session-create` + `chat-completion-V2` + Cookie（**无免登**） |
 | 思考 / 联网 | 请求体 `reasonEnabled` / `searchEnabled`（0/1，无多档 effort） |
 | 保活 | 周期 `session-create` 探测 Cookie |
 

@@ -30,17 +30,21 @@ router.get('/v1/models', requireApiKey, (_req, res) => {
 router.post('/v1/chat/completions', requireApiKey, async (req, res) => {
   const started = Date.now();
   let account = null;
-  let mode = config.getDefaultMode();
+  let mode = 'session';
   try {
     const std = normalizeChatRequest(req.body || {}, mode);
     mode = std.mode;
 
-    if (mode === 'cn') {
-      account = pickAccountRoundRobin();
-      if (!account) {
-        // fallback oversea
-        mode = 'oversea';
-      }
+    account = pickAccountRoundRobin();
+    if (!account) {
+      return res.status(503).json({
+        error: {
+          message:
+            'no valid logged-in account; import longcat.chat Cookie (passport_token_key) first',
+          type: 'server_error',
+          code: 'no_account',
+        },
+      });
     }
 
     if (!std.prompt) {
@@ -58,9 +62,7 @@ router.post('/v1/chat/completions', requireApiKey, async (req, res) => {
       res.setHeader('X-Accel-Buffering', 'no');
 
       try {
-        // Prefer collect-then-stream for reliability (oversea often buffers)
         const result = await chatCollect({
-          mode,
           account,
           content: std.prompt,
           agentId: std.agentId,
@@ -164,9 +166,8 @@ router.post('/v1/chat/completions', requireApiKey, async (req, res) => {
       return;
     }
 
-    // non-stream
+    // non-stream (session + cookie only)
     const result = await chatCollect({
-      mode,
       account,
       content: std.prompt,
       agentId: std.agentId,
@@ -232,13 +233,20 @@ router.post('/v1/chat/completions', requireApiKey, async (req, res) => {
 router.post('/v1/responses', requireApiKey, async (req, res) => {
   const started = Date.now();
   let account = null;
-  let mode = config.getDefaultMode();
+  let mode = 'session';
   try {
     const std = normalizeResponsesRequest(req.body || {}, mode);
     mode = std.mode;
-    if (mode === 'cn') {
-      account = pickAccountRoundRobin();
-      if (!account) mode = 'oversea';
+    account = pickAccountRoundRobin();
+    if (!account) {
+      return res.status(503).json({
+        error: {
+          message:
+            'no valid logged-in account; import longcat.chat Cookie (passport_token_key) first',
+          type: 'server_error',
+          code: 'no_account',
+        },
+      });
     }
     if (!std.prompt) {
       return res.status(400).json({
@@ -248,7 +256,6 @@ router.post('/v1/responses', requireApiKey, async (req, res) => {
 
     const id = responseId();
     const result = await chatCollect({
-      mode,
       account,
       content: std.prompt,
       agentId: std.agentId,

@@ -74,7 +74,7 @@ const server = app.listen(PORT, HOST, () => {
 📋 GET  /v1/models
 🛠  Admin UI: http://localhost:${PORT}/  (Basic admin / <admin_password>)
 💾 SQLite: ${paths.sqlite}
-⚙  mode: ${config.getDefaultMode()}
+⚙  mode: session-only (Cookie accounts required)
 `);
   startKeepaliveLoop();
 });

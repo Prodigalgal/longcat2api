@@ -5,20 +5,19 @@
 
 ---
 
-## 0. 两条聊天通道（先分清）
+## 0. 本项目策略：仅登录会话（不做免登）
 
-| 通道 | 端点 | 是否要登录 Cookie | 用途 |
-|------|------|-------------------|------|
-| **Oversea 免登** | `POST /api/v1/chat-completion-oversea-V2` | **否** | 游客对话；本项目默认 `default_mode=oversea` |
-| **登录会话 (CN/登录态)** | `POST /api/v1/session-create` + `POST /api/v1/chat-completion-V2` | **是**（`passport_token_key` 等） | 登录用户多轮会话、额度/按钮状态与账号绑定 |
+| 通道 | 端点 | Cookie | 本网关 |
+|------|------|--------|--------|
+| ~~Oversea 免登~~ | `chat-completion-oversea-V2` | 否 | **已禁用**，请求会 400 |
+| **登录会话** | `session-create` + `chat-completion-V2` | **是** | **唯一路径** |
 
-探针结果：
+无有效账号 Cookie 时：`503 no_account`。
 
-- 无 Cookie：`session-create` → `{"code":401,"message":"请求cookie信息为空"}`
-- 无 Cookie：`chat-completion-oversea-V2` → **正常 SSE**，流里带 `conversationId`、`model`（如 `LongCat-2.0-Preview-LongCatAI`）
-- `GET /api/v1/user-current` 未登录也可 200，返回 `loginStatus:0` 以及按钮默认值：
-  - `reasonButtonStatus`（思考默认开关）
-  - `searchButtonStatus`（联网默认开关）
+上游探针备忘：
+
+- 无 Cookie：`session-create` → `401 请求cookie信息为空`
+- 登录后才有完整 `user-current` / 思考联网按钮状态
 
 ---
 
@@ -119,45 +118,7 @@ HK region 配置里 `loginMethods.consumer.mainOrder` 含 **`email`**（以及 m
 
 ### 2.2 协议层（本项目 / 自建客户端）
 
-#### A. 免登 Oversea（无需注册）
-
-```http
-POST https://longcat.chat/api/v1/chat-completion-oversea-V2
-Content-Type: application/json
-Origin: https://longcat.chat
-Referer: https://longcat.chat/t
-m-appkey: fe_com.sankuai.friday.fe.longcat
-```
-
-```json
-{
-  "content": "你好",
-  "agentId": "1",
-  "messages": [
-    {
-      "role": "user",
-      "events": [{ "type": "userMsg", "content": "你好", "status": "FINISHED" }],
-      "chatStatus": "FINISHED",
-      "messageId": 10000001,
-      "idType": "custom"
-    },
-    {
-      "role": "assistant",
-      "events": [],
-      "chatStatus": "LOADING",
-      "messageId": 10000002,
-      "idType": "custom"
-    }
-  ],
-  "reasonEnabled": 0,
-  "searchEnabled": 0,
-  "regenerate": 0
-}
-```
-
-响应：SSE `data: {...}`，含 `conversationId`、`model`、`event.type`（`content` / `reason` / `think` / `finish`…）。
-
-#### B. 登录态（注册/Cookie 后）
+#### 登录态（唯一路径：注册/Cookie 后）
 
 ```http
 POST /api/v1/session-create
@@ -184,21 +145,12 @@ Cookie: ...
 }
 ```
 
-本仓库映射：
-
-- `mode=oversea` → A  
-- `mode=cn` → B（需账号池 Cookie；名字历史原因叫 cn，实质是 **登录会话**）
-
-OpenAI 兼容调用示例：
+OpenAI 兼容（必须先导入有效账号）：
 
 ```bash
-# 免登思考
 curl https://longcat2api.mnnu.eu.org/v1/chat/completions \
   -H "Authorization: Bearer <API_KEY>" \
   -d '{"model":"longcat-thinking","messages":[{"role":"user","content":"1+1?"}]}'
-
-# 登录态 + 思考 + 联网（需有效账号）
-curl ... -d '{"model":"longcat-reason-search","mode":"cn","messages":[...]}'
 ```
 
 ---
@@ -288,8 +240,7 @@ curl ... -d '{"model":"longcat-reason-search","mode":"cn","messages":[...]}'
 
 | 模式 | 保活 |
 |------|------|
-| 纯 oversea | 可不建账号；注意 429 重试即可 |
-| 登录池 | 导入 Cookie 后开启 `auto_renew`；后台定时 probe；失败人工或半自动重登 |
+| 登录池（唯一） | 导入 Cookie 后开启 `auto_renew`；后台定时 probe；失败人工或半自动重登 |
 | 海外注册机 | 注册出口必须走 **CF/VLESS 海外节点**；Cookie 写入账号池后进入保活 |
 
 ### 4.4 保活探针示例
@@ -330,26 +281,25 @@ Content-Type: application/json
            SSE → OpenAI chat/responses
 ```
 
-并行：无 Cookie 时继续用 **oversea-V2** 托底。
-
 ---
 
 ## 6. 实现清单（相对本仓库）
 
 | 能力 | 状态 |
 |------|------|
-| oversea 对话 + reason/search 模型别名 | ✅ 已实现 |
-| 登录态 session + chat-V2 | ✅ 已实现 |
+| 登录态 session + chat-V2（唯一对话路径） | ✅ 已实现；无账号 503 |
+| reason/search 模型别名 | ✅ 已实现 |
 | Cookie 导入 / 探测保活 | ✅ 已实现 |
-| mykeeta 海外邮箱全自动注册 | ⏳ 协议已摸清，需补 `mykeetaClient` + Yoda 兜底 |
-| 过期自动邮箱 OTP 重登 | ⏳ 可基于同一套 API 扩展 |
-| 思考多档 effort | ❌ 上游网页无此能力，只能 0/1 |
+| 免登 oversea | ❌ 已关闭 |
+| mykeeta 海外邮箱全自动注册 | ⏳ 协议已摸清，`mykeetaClient` + Yoda 兜底 |
+| 过期自动邮箱 OTP 重登 | ⏳ 可扩展 |
+| 思考多档 effort | ❌ 上游只有 0/1 |
 
 ---
 
 ## 7. 一句话结论
 
-1. **注册**：海外走 **mykeeta 邮箱**，不是国内 meituan 手机页；有 OTP，可能 Yoda 滑块。  
-2. **对话**：免登用 **oversea-V2**；登录后用 **session-create + chat-completion-V2**。  
-3. **思考/联网**：请求体 **`reasonEnabled` / `searchEnabled` 两个开关**，无 low/medium/high。  
-4. **保活**：对 Cookie 周期性 **session-create**；oversea 模式不依赖账号保活。
+1. **注册**：海外 **mykeeta 邮箱**（非 meituan 手机）；OTP + 可能 Yoda。  
+2. **对话**：**仅** `session-create` + `chat-completion-V2` + Cookie。  
+3. **思考/联网**：`reasonEnabled` / `searchEnabled` 开关（无多档）。  
+4. **保活**：周期 `session-create` 探测 Cookie。

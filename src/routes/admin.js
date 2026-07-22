@@ -46,15 +46,13 @@ router.use(requireAdmin);
 router.get('/api/protocol/summary', (_req, res) => {
   res.json({
     ok: true,
+    mode: 'session_only',
+    note: 'Guest oversea chat is disabled; every request needs a Cookie account.',
     oversea_passport: MYKEETA.origin,
     mykeeta_login_url: buildLoginPageUrl(),
     flow: summarizeFlow(),
     chat: {
-      oversea: {
-        url: 'https://longcat.chat/api/v1/chat-completion-oversea-V2',
-        cookie: false,
-      },
-      logged_in: {
+      session: {
         session: 'https://longcat.chat/api/v1/session-create',
         chat: 'https://longcat.chat/api/v1/chat-completion-V2',
         cookie: 'passport_token_key required',

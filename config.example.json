@@ -1,7 +1,7 @@
 {
   "api_keys": "sk-longcat",
   "admin_password": "admin",
-  "default_mode": "oversea",
+  "default_mode": "session",
   "temp_mail": {
     "api_base": "https://apimail.example.com",
     "admin_password": "YOUR_ADMIN_PASSWORD",
