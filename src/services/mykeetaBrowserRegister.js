@@ -337,6 +337,17 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
   log(onLog, `open ${loginUrl} (slow-site timeouts goto=${SLOW.gotoMs}ms total=${timeoutMs}ms)`);
 
   const headless = process.env.LONGCAT2API_REGISTER_HEADLESS !== '0';
+  // K8s readOnlyRootFilesystem: ensure /tmp parents exist before chromium mkdtemp
+  const { mkdirSync } = await import('node:fs');
+  for (const d of ['/tmp', '/tmp/playwright-artifacts', process.env.TMPDIR, process.env.HOME].filter(
+    Boolean
+  )) {
+    try {
+      mkdirSync(d, { recursive: true });
+    } catch {
+      /* ignore */
+    }
+  }
   let browser;
   try {
     browser = await chromium.launch({
@@ -344,15 +355,19 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
       args: [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
+        '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--no-zygote',
+        '--single-process',
       ],
       proxy: toPlaywrightProxy(proxyUrl),
       timeout: SLOW.gotoMs,
     });
   } catch (e) {
     throw new Error(
-      `Playwright chromium launch failed: ${e.message}. Run: npx playwright install chromium`
+      `Playwright chromium launch failed: ${e.message}. ` +
+        `Need Chromium in image + writable /tmp (PLAYWRIGHT_BROWSERS_PATH).`
     );
   }
 
