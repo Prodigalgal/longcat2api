@@ -233,14 +233,20 @@ async function clickSubmitContinue(page, onLog) {
 }
 
 async function waitCanvasReady(page) {
-  const canvas = page.locator('canvas.sudoku-canvas, .sudoku-image canvas, canvas').first();
-  for (let i = 0; i < 20; i++) {
-    if (await canvas.isVisible().catch(() => false)) {
-      const loading = page.locator('.sudoku-loading, text=Loading');
-      const still = await loading.isVisible().catch(() => false);
-      if (!still) return canvas;
+  const canvas = page.locator('canvas.sudoku-canvas, .sudoku-image canvas, .yoda-sudoku-wrap canvas, canvas').first();
+  for (let i = 0; i < 40; i++) {
+    // wait out loading spinner
+    const loading = page.locator('.sudoku-loading:visible, label:has-text("Loading")');
+    if (await loading.isVisible().catch(() => false)) {
+      await sleep(500);
+      continue;
     }
-    await sleep(500);
+    if (await canvas.isVisible().catch(() => false)) {
+      // ensure non-zero size
+      const box = await canvas.boundingBox().catch(() => null);
+      if (box && box.width > 40 && box.height > 40) return canvas;
+    }
+    await sleep(400);
   }
   return canvas;
 }
@@ -281,32 +287,52 @@ async function trySolveYoda(page, onLog) {
     return { handled: false, error: 'Yoda present; captcha_ai not enabled (last-resort only)' };
   }
 
-  const canvas = await waitCanvasReady(page);
-  if (!(await canvas.isVisible().catch(() => false))) {
-    return { handled: false, error: 'Yoda canvas not ready' };
+  log(onLog, 'waiting Yoda canvas (slow load)...');
+  let canvas = await waitCanvasReady(page);
+  let box = await canvas.boundingBox().catch(() => null);
+
+  // Prefer canvas box; fallback to sudoku-image / modal content
+  if (!box || box.width < 40) {
+    const area = page.locator('.sudoku-image, .yoda-sudoku-wrap, .yoda-modal-content').first();
+    box = await area.boundingBox().catch(() => null);
+    log(onLog, `canvas box fallback area=${box ? `${box.width}x${box.height}` : 'null'}`);
+  }
+  if (!box) {
+    return { handled: false, error: 'Yoda canvas/area not ready' };
   }
 
   log(onLog, 'AI captcha fallback for Yoda sudoku (last resort)...');
-  const box = await canvas.boundingBox();
   const shot = await page
     .locator('.yoda-modal-content, .yoda-sudoku-wrap, #yodaVerify')
     .first()
     .screenshot({ type: 'png' })
     .catch(() => page.screenshot({ type: 'png' }));
 
-  const ai = await solveYodaSudokuWithAi(shot);
-  if (!ai.ok || !ai.points?.length) {
-    log(onLog, `AI sudoku parse: ${ai.error || ai.raw || 'no points'}`);
-    return { handled: false, error: `AI could not extract connect-dot points: ${ai.error || ''}` };
+  // Up to 2 AI attempts with refresh between
+  let points = null;
+  for (let round = 1; round <= 2; round++) {
+    const ai = await solveYodaSudokuWithAi(shot);
+    if (ai.ok && ai.points?.length) {
+      points = ai.points;
+      log(onLog, `AI points (round ${round})=${JSON.stringify(points)}`);
+      break;
+    }
+    log(onLog, `AI sudoku parse round ${round}: ${ai.error || ai.raw || 'no points'}`);
+    try {
+      await page.locator('.sudoku-operate-refresh, img[alt="refresh"]').first().click({ timeout: 2000 });
+      await sleep(3500);
+    } catch {
+      /* ignore */
+    }
   }
-  const points = ai.points;
-
-  if (!box) return { handled: false, error: 'no canvas box' };
-  log(onLog, `AI points=${JSON.stringify(points)}`);
+  if (!points?.length) {
+    return { handled: false, error: 'AI could not extract connect-dot points' };
+  }
 
   // "connect the dots" needs a continuous drag, not discrete clicks
   const title = await page.locator('.sudoku-title, .yoda-modal-content').first().innerText().catch(() => '');
-  const needDrag = /connect|line|shortest|连线|连接/i.test(title || '');
+  // default drag for connect-dots; tap only if clearly "tap icons"
+  const needDrag = !/tap icons|点选|按顺序点击/i.test(title || '');
   const xy = points.map(([rx, ry]) => [
     box.x + Math.min(0.98, Math.max(0.02, rx)) * box.width,
     box.y + Math.min(0.98, Math.max(0.02, ry)) * box.height,
