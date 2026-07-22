@@ -285,62 +285,59 @@ async function trySolveYoda(page, onLog) {
     return { handled: true, method: 'wait' };
   }
 
-  const title = await page.locator('.sudoku-title, .yoda-modal-content, .yoda-slider-wrapper').first().innerText().catch(() => body);
-  log(onLog, `Yoda title/body: ${(title || '').slice(0, 100)}`);
+  // Prefer classic SLIDER (what manual users usually see): refresh until slider, solve without AI
+  for (let rotate = 0; rotate < 6; rotate++) {
+    const titleNow = await page
+      .locator('.sudoku-title, .yoda-modal-content, .yoda-slider-wrapper')
+      .first()
+      .innerText()
+      .catch(() => body);
+    const sliderDet = await detectSlider(page);
+    const looksSudoku = /connect the dots|shortest line|tap icons|following order|sudoku/i.test(
+      titleNow || ''
+    );
+    const looksSlider =
+      (!!sliderDet && !looksSudoku) ||
+      /滑块|向右滑动|拖动滑块|slide to|drag the slider|hold the slider/i.test(titleNow || body);
 
-  // ---------- 1) SLIDER: traditional library-style (NO AI) ----------
-  const sliderDet = await detectSlider(page);
-  const looksSlider =
-    !!sliderDet ||
-    /滑块|拖动|向右滑动|slide to|drag the slider|hold the slider/i.test(title || body);
-  const looksSudoku = /connect the dots|shortest line|tap icons|following order|sudoku/i.test(
-    title || body
-  );
+    log(onLog, `Yoda probe#${rotate}: slider=${!!sliderDet} sudoku=${looksSudoku} title=${(titleNow || '').slice(0, 60)}`);
 
-  if (looksSlider && !looksSudoku) {
-    log(onLog, 'Yoda type=SLIDER → traditional solver (no AI)');
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const r = await solveSliderTraditional(page, (m) => log(onLog, m));
-      if (r.ok) {
-        log(onLog, `slider solved attempt=${attempt} dist=${r.distance} method=${r.method}`);
-        return { handled: true, method: r.method };
+    if (looksSlider || (!!sliderDet && !looksSudoku)) {
+      log(onLog, 'Yoda type=SLIDER → traditional gap+drag (NO AI)');
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const r = await solveSliderTraditional(page, (m) => log(onLog, m));
+        if (r.ok) {
+          log(onLog, `slider OK attempt=${attempt} dist=${r.distance}`);
+          return { handled: true, method: r.method };
+        }
+        log(onLog, `slider fail ${attempt}: ${r.error}`);
+        try {
+          await page.locator('.sudoku-operate-refresh, img[alt="refresh"], [class*="refresh"]').first().click({ timeout: 1500 });
+          await sleep(2800);
+        } catch {
+          /* ignore */
+        }
       }
-      log(onLog, `slider attempt ${attempt} fail: ${r.error}`);
-      try {
-        await page.locator('.sudoku-operate-refresh, img[alt="refresh"], [class*="refresh"]').first().click({ timeout: 1500 });
-        await sleep(2500);
-      } catch {
-        /* ignore */
-      }
+      // keep refreshing for another slider instance
     }
-    // slider failed: do NOT jump to AI for pure slider (user request)
-    return { handled: false, error: 'traditional slider failed after retries' };
-  }
 
-  // ---------- 2) connect-dots / tap-icons: AI last resort only ----------
-  try {
-    const refresh = page.locator('.sudoku-operate-refresh, img[alt="refresh"]').first();
-    if (await refresh.isVisible({ timeout: 1500 })) {
-      await refresh.click();
-      log(onLog, 'clicked yoda refresh');
+    // Not slider (or slider failed): try refresh to roll a slider type
+    try {
+      await page.locator('.sudoku-operate-refresh, img[alt="refresh"], [class*="refresh"]').first().click({ timeout: 1500 });
+      log(onLog, `refresh Yoda to roll type (${rotate + 1}/6)`);
       await sleep(3500);
+    } catch {
+      log(onLog, 'no refresh control');
+      break;
     }
-  } catch {
-    /* ignore */
   }
 
-  // If slider UI mixed with sudoku, try traditional slider once first (still no AI)
-  if (await detectSlider(page)) {
-    log(onLog, 'slider UI also present — try traditional first');
-    const r = await solveSliderTraditional(page, (m) => log(onLog, m));
-    if (r.ok) return { handled: true, method: r.method };
-  }
-
+  // Still non-slider → AI last resort for connect-dots / tap-icons only
   const ca = getCaptchaAiConfig();
   if (!ca.ready) {
     return {
       handled: false,
-      error: 'non-slider Yoda present; captcha_ai not enabled (AI is last-resort only for sudoku/tap)',
+      error: 'non-slider Yoda remains after refresh; captcha_ai not enabled for sudoku/tap last-resort',
     };
   }
 
