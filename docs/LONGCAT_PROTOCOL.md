@@ -291,7 +291,7 @@ Content-Type: application/json
 | reason/search 模型别名 | ✅ 已实现 |
 | Cookie 导入 / 探测保活 | ✅ 已实现 |
 | 免登 oversea | ❌ 已关闭 |
-| mykeeta 海外邮箱全自动注册 | ⏳ 协议已摸清，`mykeetaClient` + Yoda 兜底 |
+| mykeeta 海外邮箱全自动注册 | ✅ Playwright + Temp Mail；慢站点长超时；**AI 打码仅最后兜底** |
 | 过期自动邮箱 OTP 重登 | ⏳ 可扩展 |
 | 思考多档 effort | ❌ 上游只有 0/1 |
 

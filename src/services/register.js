@@ -1,15 +1,10 @@
 /**
- * LongCat 注册机（仅海外）
+ * LongCat 注册机（仅海外 mykeeta 邮箱）
  *
- * 海外邮箱：passport.mykeeta.com（不是国内 passport.meituan.com）
- * 完整协议见 docs/LONGCAT_PROTOCOL.md + services/mykeetaClient.js
+ * 全自动：Playwright 打开 passport.mykeeta.com（加载 H5guard）
+ *   → 邮箱 OTP（Cloudflare Temp Mail）→ longcat Cookie → 入库探测
  *
- * 本模块提供：
- * 1) 临时邮箱 + 海外代理（注册前置，出口必须非 CN）
- * 2) Cookie / passport_token 导入入库（登录态对话主路径）
- * 3) 批量导入 Cookie
- * 4) 半自动：创建邮箱 → 返回 mykeeta 登录 URL → 人工/后续自动 OTP 后绑 Cookie
- * 5) 连通性探测后标记 is_valid（session-create 保活）
+ * 半自动兜底：浏览器不可用时仅创建邮箱 + draft
  */
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
@@ -20,6 +15,7 @@ import {
   appendRegisterLog,
   patchRegisterJob,
   getRegisterJob,
+  getAccount,
 } from '../db/index.js';
 import { createAddress, isTempMailConfigured } from './tempMail.js';
 import {
@@ -30,11 +26,11 @@ import {
 } from './proxyPool.js';
 import { probeAccount } from './longcatClient.js';
 import { buildLoginPageUrl, summarizeFlow } from './mykeetaClient.js';
+import { registerOneAccount } from './mykeetaBrowserRegister.js';
 
 export function parseCookieString(raw) {
   const s = String(raw || '').trim();
   if (!s) return {};
-  // strip "Cookie: " prefix
   const body = s.replace(/^cookie:\s*/i, '');
   const map = {};
   for (const part of body.split(';')) {
@@ -54,6 +50,7 @@ export function normalizeAccountFromCookie({
   password = '',
   mail_jwt = '',
   note = '',
+  region = 'oversea',
 }) {
   const map = parseCookieString(cookie);
   const passport =
@@ -83,6 +80,7 @@ export function normalizeAccountFromCookie({
     lxsdk_cuid: map._lxsdk_cuid || '',
     lxsdk_s: map._lxsdk_s || '',
     mail_jwt,
+    region,
     note,
     enabled: true,
     auto_renew: true,
@@ -122,13 +120,11 @@ export async function prepareRegisterMailbox() {
       }
       proxy = getProxyUrl();
     } catch (e) {
-      // Soft-fail: still create mailbox; full auto register needs overseas egress + H5guard.
       proxy_error = e.message || String(e);
-      console.warn('[Register] proxy start failed (continuing without local sing-box):', proxy_error);
+      console.warn('[Register] proxy start failed:', proxy_error);
     }
   }
   const addr = await createAddress(tm);
-  const mykeetaLoginUrl = buildLoginPageUrl();
   return {
     email: addr.address,
     mail_jwt: addr.jwt,
@@ -136,67 +132,10 @@ export async function prepareRegisterMailbox() {
     proxy_error: proxy_error || undefined,
     region: 'oversea',
     passport: 'https://passport.mykeeta.com',
-    mykeeta_login_url: mykeetaLoginUrl,
+    mykeeta_login_url: buildLoginPageUrl(),
     flow: summarizeFlow(),
-    auto_register_ready: false,
-    tip:
-      '半自动：用该邮箱在 mykeeta_login_url 完成邮箱 OTP（海外 IP）。' +
-      '全自动注册尚未完成（mykeeta 需 H5guard/Yoda，裸 HTTP 会 403）。' +
-      '成功后把 longcat.chat Cookie（passport_token_key）导入账号池。',
-  };
-}
-
-/**
- * Single auto-register attempt:
- * - create mailbox + proxy
- * - cannot complete Meituan passport fully headless; records staged job log
- * - returns mailbox for manual cookie bind OR future extension hooks
- */
-export async function runOneRegisterAttempt({ jobId } = {}) {
-  const log = (msg) => {
-    console.log(`[Register] ${msg}`);
-    if (jobId) appendRegisterLog(jobId, msg);
-  };
-
-  log('创建临时邮箱（海外 mykeeta 邮箱注册前置）...');
-  const prepared = await prepareRegisterMailbox();
-  log(`邮箱: ${prepared.email}`);
-  if (prepared.proxy_url) log(`代理: ${prepared.proxy_url}`);
-  log(`Passport: ${prepared.passport}`);
-  log(`Login URL: ${prepared.mykeeta_login_url}`);
-  log(prepared.tip);
-
-  // Draft account for cookie bind after mykeeta email OTP (auto or manual).
-  const draft = {
-    id: randomUUID().replace(/-/g, '').slice(0, 16),
-    name: prepared.email,
-    email: prepared.email,
-    password: randomPassword(),
-    cookie: '',
-    passport_token: '',
-    mail_jwt: prepared.mail_jwt,
-    region: 'oversea',
-    note: 'awaiting_mykeeta_cookie_bind',
-    enabled: false,
-    auto_renew: true,
-    is_valid: false,
-  };
-  insertAccount(draft);
-  log(`已创建待绑定账号 draft_id=${draft.id} password=${draft.password}`);
-
-  return {
-    ok: false,
-    pending_cookie: true,
-    account_id: draft.id,
-    email: prepared.email,
-    password: draft.password,
-    mail_jwt: prepared.mail_jwt,
-    mykeeta_login_url: prepared.mykeeta_login_url,
-    proxy_url: prepared.proxy_url,
-    flow: prepared.flow,
-    message:
-      '请用海外 IP + 该邮箱在 passport.mykeeta.com 完成邮箱验证码注册/登录，' +
-      '再把 longcat.chat Cookie 绑定到 account_id。协议细节见 docs/LONGCAT_PROTOCOL.md',
+    auto_register_ready: true,
+    tip: '全自动请用 /api/account/auto-register；需 Playwright chromium + 建议海外代理。',
   };
 }
 
@@ -207,8 +146,105 @@ function randomPassword() {
   return s;
 }
 
+/**
+ * Full auto register one account (Playwright + temp mail).
+ * Falls back to draft mailbox if browser fails and soft_fail=true.
+ */
+export async function runOneRegisterAttempt({ jobId, soft_fail = false } = {}) {
+  const log = (msg) => {
+    console.log(`[Register] ${msg}`);
+    if (jobId) appendRegisterLog(jobId, msg);
+  };
+
+  try {
+    log('full-auto mykeeta browser register starting...');
+    const result = await registerOneAccount({
+      onLog: log,
+      // LongCat / mykeeta often slow — default 7 minutes
+      timeoutMs: Number(process.env.LONGCAT2API_REGISTER_TIMEOUT_MS || 420000),
+    });
+
+    const acc = {
+      id: randomUUID().replace(/-/g, '').slice(0, 16),
+      name: result.email,
+      email: result.email,
+      password: result.password,
+      cookie: result.cookie,
+      passport_token: result.passport_token,
+      lxsdk_cuid: result.lxsdk_cuid || '',
+      lxsdk_s: result.lxsdk_s || '',
+      mail_jwt: result.mail_jwt,
+      region: 'oversea',
+      note: 'auto_mykeeta_browser',
+      enabled: true,
+      auto_renew: true,
+      is_valid: false,
+    };
+    insertAccount(acc);
+
+    const probe = await probeAccount(acc);
+    updateAccount(acc.id, {
+      is_valid: probe.ok,
+      last_test_at: Date.now(),
+      renew_error: probe.ok ? '' : probe.detail,
+    });
+    log(`probe: ${probe.ok ? 'ok' : 'fail'} ${probe.detail || ''}`);
+
+    return {
+      ok: probe.ok,
+      account_id: acc.id,
+      email: result.email,
+      password: result.password,
+      has_cookie: true,
+      detail: probe.detail || result.detail,
+      message: probe.ok
+        ? '注册成功且 session 探测通过'
+        : '注册拿到 Cookie 但探测失败（可能风控/地区）',
+    };
+  } catch (e) {
+    log(`full-auto failed: ${e.message}`);
+    if (!soft_fail) {
+      return {
+        ok: false,
+        error: e.message,
+        message: `全自动注册失败: ${e.message}`,
+      };
+    }
+
+    // soft fallback: draft mailbox only
+    log('soft_fail → create draft mailbox only');
+    const prepared = await prepareRegisterMailbox();
+    const draft = {
+      id: randomUUID().replace(/-/g, '').slice(0, 16),
+      name: prepared.email,
+      email: prepared.email,
+      password: randomPassword(),
+      cookie: '',
+      passport_token: '',
+      mail_jwt: prepared.mail_jwt,
+      region: 'oversea',
+      note: 'awaiting_mykeeta_cookie_bind',
+      enabled: false,
+      auto_renew: true,
+      is_valid: false,
+    };
+    insertAccount(draft);
+    return {
+      ok: false,
+      pending_cookie: true,
+      account_id: draft.id,
+      email: prepared.email,
+      password: draft.password,
+      mail_jwt: prepared.mail_jwt,
+      mykeeta_login_url: prepared.mykeeta_login_url,
+      proxy_url: prepared.proxy_url,
+      error: e.message,
+      message: `全自动失败，已创建 draft 邮箱供手动绑定: ${e.message}`,
+    };
+  }
+}
+
 export async function bindCookieToAccount(accountId, cookie) {
-  const { getAccount } = await import('../db/index.js');
   const prev = getAccount(accountId);
   if (!prev) throw new Error('account not found');
   const parsed = normalizeAccountFromCookie({
@@ -237,9 +273,14 @@ export async function bindCookieToAccount(accountId, cookie) {
 }
 
 /**
- * Batch job: create N mailboxes / draft accounts asynchronously
+ * Batch full-auto register. success = probe-ok accounts with cookie.
  */
-export function startBatchRegisterJob({ success_target = 3, max_attempts = 5, concurrent = 1 } = {}) {
+export function startBatchRegisterJob({
+  success_target = 3,
+  max_attempts = 5,
+  concurrent = 1,
+  soft_fail = false,
+} = {}) {
   const id = randomUUID();
   createRegisterJob({
     id,
@@ -248,35 +289,53 @@ export function startBatchRegisterJob({ success_target = 3, max_attempts = 5, co
     concurrent,
   });
 
-  // fire and forget
   (async () => {
     let success = 0;
     let fail = 0;
     let attempt = 0;
     const limit = Math.max(1, max_attempts);
     const target = Math.max(0, success_target);
+    const conc = Math.max(1, Math.min(3, Number(concurrent) || 1));
 
-    appendRegisterLog(id, `batch start target=${target} max=${limit}`);
+    appendRegisterLog(id, `batch full-auto start target=${target} max=${limit} concurrent=${conc}`);
 
     while (attempt < limit && (target === 0 || success < target)) {
-      attempt++;
-      patchRegisterJob(id, { attempt_count: attempt });
-      try {
-        const r = await runOneRegisterAttempt({ jobId: id });
-        // pending_cookie counts as "prepared success" for mailbox pipeline
-        if (r.pending_cookie || r.ok) {
-          success++;
-          patchRegisterJob(id, { success_count: success });
-          appendRegisterLog(id, `prepared #${success} email=${r.email}`);
-        } else {
-          fail++;
-          patchRegisterJob(id, { fail_count: fail });
-        }
-      } catch (e) {
-        fail++;
-        patchRegisterJob(id, { fail_count: fail });
-        appendRegisterLog(id, `fail: ${e.message}`);
+      const batch = Math.min(conc, limit - attempt, target === 0 ? conc : target - success);
+      const tasks = [];
+      for (let i = 0; i < batch; i++) {
+        attempt++;
+        tasks.push(
+          (async () => {
+            try {
+              const r = await runOneRegisterAttempt({ jobId: id, soft_fail });
+              if (r.ok && r.has_cookie !== false && !r.pending_cookie) {
+                success++;
+                appendRegisterLog(id, `OK #${success} email=${r.email} id=${r.account_id}`);
+              } else {
+                fail++;
+                appendRegisterLog(
+                  id,
+                  `FAIL email=${r.email || '-'} err=${r.error || r.message || 'pending'}`
+                );
+              }
+            } catch (e) {
+              fail++;
+              appendRegisterLog(id, `FAIL exception: ${e.message}`);
+            }
+          })()
+        );
       }
+      patchRegisterJob(id, {
+        attempt_count: attempt,
+        success_count: success,
+        fail_count: fail,
+      });
+      await Promise.all(tasks);
+      patchRegisterJob(id, {
+        attempt_count: attempt,
+        success_count: success,
+        fail_count: fail,
+      });
       await new Promise((r) => setTimeout(r, 2000));
     }
 

@@ -73,6 +73,14 @@ function defaultSettings() {
       connect_retries: 5,
       fetch_sub_each_time: true,
     },
+    // AI vision captcha — last-resort fallback only (see captchaAi.js)
+    captcha_ai: {
+      enabled: false,
+      api_base: '',
+      api_key: '',
+      model: 'grok',
+      timeout: 90,
+    },
   };
 }
 
@@ -172,6 +180,24 @@ export function applyEnvOverrides(data) {
     pp.refresh_interval = envInt('LONGCAT2API_PROXY_REFRESH_INTERVAL', 3600, 0, 604800);
   }
   d.proxy_pool = pp;
+
+  const ca = d.captcha_ai || {};
+  if (process.env.LONGCAT2API_CAPTCHA_AI_ENABLED != null) {
+    ca.enabled = envBool('LONGCAT2API_CAPTCHA_AI_ENABLED', false);
+  }
+  if (process.env.LONGCAT2API_CAPTCHA_AI_API_BASE != null) {
+    ca.api_base = env('LONGCAT2API_CAPTCHA_AI_API_BASE', '');
+  }
+  if (process.env.LONGCAT2API_CAPTCHA_AI_API_KEY != null) {
+    ca.api_key = env('LONGCAT2API_CAPTCHA_AI_API_KEY', '');
+  }
+  if (process.env.LONGCAT2API_CAPTCHA_AI_MODEL != null) {
+    ca.model = env('LONGCAT2API_CAPTCHA_AI_MODEL', 'grok');
+  }
+  if (process.env.LONGCAT2API_CAPTCHA_AI_TIMEOUT != null) {
+    ca.timeout = envInt('LONGCAT2API_CAPTCHA_AI_TIMEOUT', 90, 15, 180);
+  }
+  d.captcha_ai = ca;
   return d;
 }
 
@@ -252,6 +278,18 @@ class ConfigStore {
 
   getProxyPool() {
     return { ...defaultSettings().proxy_pool, ...(this.data.proxy_pool || {}) };
+  }
+
+  getCaptchaAi() {
+    const ca = { ...defaultSettings().captcha_ai, ...(this.data.captcha_ai || {}) };
+    return {
+      ...ca,
+      enabled: !!ca.enabled,
+      api_base: String(ca.api_base || '').replace(/\/+$/, ''),
+      api_key: String(ca.api_key || ''),
+      model: String(ca.model || 'grok') || 'grok',
+      timeout: Math.max(15, Math.min(180, Number(ca.timeout) || 90)),
+    };
   }
 
   getDefaultMode() {

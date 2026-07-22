@@ -22,5 +22,13 @@
     "refresh_interval": 3600,
     "connect_retries": 5,
     "fetch_sub_each_time": true
+  },
+  "captcha_ai": {
+    "enabled": false,
+    "api_base": "https://sub2api.example.com",
+    "api_key": "sk-xxx",
+    "model": "grok",
+    "timeout": 90,
+    "_comment": "AI vision captcha is LAST RESORT only after wait/retry fail"
   }
 }

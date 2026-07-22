@@ -124,18 +124,17 @@
     </section>
 
     <section id="tab-register" class="panel">
-      <h2>注册机（仅海外 mykeeta 邮箱）</h2>
+      <h2>注册机（全自动 · 海外 mykeeta 邮箱）</h2>
       <p class="muted">
-        临时邮箱 + <b>海外代理</b>。登录页是
-        <code>passport.mykeeta.com</code>（邮箱 OTP），不是国内 meituan 手机号。
-        完成后把 <code>longcat.chat</code> Cookie 绑定到 draft。对话/思考/联网见
-        <code>docs/LONGCAT_PROTOCOL.md</code>：
-        <code>reasonEnabled</code>/<code>searchEnabled</code> 为 0/1 开关。
+        Playwright 打开 <code>passport.mykeeta.com</code>（加载 H5guard）+ Temp Mail 收 OTP +
+        写入 Cookie。站点较慢，单次注册默认最长约 <b>7 分钟</b>。
+        <b>AI 打码仅作最后兜底</b>（先等待/重试，再 vision）。
+        需 Chromium + 建议海外代理。对话仅登录态。
       </p>
       <div class="actions">
-        <button class="btn" id="btnPrepMail">准备邮箱（单次）</button>
-        <button class="btn" id="btnAutoReg">单次注册任务</button>
-        <button class="btn secondary" id="btnBatchReg">批量准备邮箱</button>
+        <button class="btn" id="btnAutoReg">全自动注册 1 个</button>
+        <button class="btn" id="btnBatchReg">全自动批量（目标 5）</button>
+        <button class="btn secondary" id="btnPrepMail">仅准备邮箱</button>
       </div>
       <h3>绑定 Cookie 到账号 ID</h3>
       <div class="row">
@@ -400,10 +399,10 @@
       try {
         const r = await api('/api/account/auto-register-batch', {
           method: 'POST',
-          body: JSON.stringify({ success_target: 3, max_attempts: 5 }),
+          body: JSON.stringify({ success_target: 5, max_attempts: 8, concurrent: 1 }),
         });
         $('regLog').textContent = JSON.stringify(r, null, 2);
-        toast('批量任务: ' + r.job_id);
+        toast('全自动批量: ' + r.job_id);
         pollJob(r.job_id);
       } catch (e) { toast(e.message); }
     };

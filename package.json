@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "db:init": "node -e \"import('./src/db/index.js').then(m => m.initDb())\""
+    "db:init": "node -e \"import('./src/db/index.js').then(m => m.initDb())\"",
+    "postinstall": "node -e \"try{require('child_process').execSync('npx playwright install chromium',{stdio:'inherit'})}catch(e){console.warn('playwright install skipped',e.message)}\"",
+    "register:one": "node -e \"import('./src/services/register.js').then(m=>m.runOneRegisterAttempt({}).then(r=>{console.log(JSON.stringify(r,null,2));process.exit(r.ok?0:1)}))\""
   },
   "engines": {
     "node": ">=18"
@@ -24,6 +26,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "playwright": "^1.51.0",
     "socks-proxy-agent": "^8.0.5",
     "undici": "^7.5.0",
     "uuid": "^11.1.0"

@@ -36,10 +36,17 @@ import {
 import { probeAccount } from '../services/longcatClient.js';
 import { renewAll, renewOneAccount } from '../services/keepalive.js';
 import { summarizeFlow, buildLoginPageUrl, MYKEETA } from '../services/mykeetaClient.js';
+import { getCaptchaAiConfig, solveCaptchaWithAi } from '../services/captchaAi.js';
 
 const router = Router();
 
 router.use(requireAdmin);
+
+function maskKey(k) {
+  if (!k) return '';
+  if (k.length <= 12) return '***';
+  return `${k.slice(0, 6)}***${k.slice(-4)}`;
+}
 
 // ─── protocol cheat-sheet (oversea email → chat → keepalive) ─
 
@@ -86,6 +93,18 @@ router.get('/api/config', (_req, res) => {
       ...config.getProxyPool(),
       status: proxyStatus(),
     },
+    captcha_ai: (() => {
+      const ca = config.getCaptchaAi();
+      return {
+        enabled: ca.enabled,
+        api_base: ca.api_base,
+        api_key: maskKey(ca.api_key),
+        model: ca.model,
+        timeout: ca.timeout,
+        configured: !!(ca.api_base && ca.api_key),
+        role: 'last_resort_fallback',
+      };
+    })(),
   });
 });
 
@@ -97,6 +116,14 @@ router.post('/api/config', (req, res) => {
   if (body.default_mode != null) patch.default_mode = body.default_mode;
   if (body.keepalive_interval_seconds != null) {
     patch.keepalive_interval_seconds = Number(body.keepalive_interval_seconds);
+  }
+  if (body.captcha_ai && typeof body.captcha_ai === 'object') {
+    const prev = config.getCaptchaAi();
+    const ca = { ...prev, ...body.captcha_ai };
+    if (typeof ca.api_key === 'string' && ca.api_key.includes('***')) {
+      ca.api_key = prev.api_key;
+    }
+    patch.captcha_ai = ca;
   }
   if (body.temp_mail && typeof body.temp_mail === 'object') {
     patch.temp_mail = { ...config.getTempMail(), ...body.temp_mail };
@@ -229,6 +256,61 @@ router.post('/api/account/:id/bind-cookie', async (req, res) => {
   }
 });
 
+// ─── captcha AI (last-resort only) ──────────────────────────
+
+router.get('/api/captcha-ai/config', (_req, res) => {
+  const ca = config.getCaptchaAi();
+  res.json({
+    ok: true,
+    captcha_ai: {
+      enabled: ca.enabled,
+      api_base: ca.api_base,
+      api_key: ca.api_key, // admin can toggle eye; panel masks if needed
+      model: ca.model,
+      timeout: ca.timeout,
+      configured: !!(ca.api_base && ca.api_key),
+      role: 'last_resort_fallback_only',
+    },
+  });
+});
+
+router.post('/api/captcha-ai/config', (req, res) => {
+  const body = req.body?.captcha_ai || req.body || {};
+  const prev = config.getCaptchaAi();
+  let key = body.api_key;
+  if (key == null || (typeof key === 'string' && key.includes('***'))) key = prev.api_key;
+  const next = {
+    enabled: body.enabled != null ? !!body.enabled : prev.enabled,
+    api_base: String(body.api_base != null ? body.api_base : prev.api_base || '').replace(/\/+$/, ''),
+    api_key: String(key || ''),
+    model: String(body.model || prev.model || 'grok'),
+    timeout: Math.max(15, Math.min(180, Number(body.timeout) || prev.timeout || 90)),
+  };
+  config.update({ captcha_ai: next });
+  res.json({ ok: true, captcha_ai: { ...next, api_key: maskKey(next.api_key), message: 'AI 打码配置已保存（仅作最后兜底）' } });
+});
+
+router.post('/api/captcha-ai/test', async (req, res) => {
+  const ca = getCaptchaAiConfig();
+  if (!ca.ready) {
+    return res.json({ ok: false, error: '请先启用并填写 AI API 地址与 Key' });
+  }
+  // 1x1 png
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const r = await solveCaptchaWithAi(png, { kind: 'image', contentType: 'image/png' });
+  res.json({
+    ok: r.ok || !!r.raw,
+    message: 'AI 接口已调用（测试图不一定有字符）',
+    sample_reply: r.code || r.raw || r.error || '',
+    model: ca.model,
+    api_base: ca.api_base,
+    role: 'last_resort_only',
+  });
+});
+
 // ─── temp mail ──────────────────────────────────────────────
 
 router.get('/api/temp-mail/config', async (_req, res) => {
@@ -284,10 +366,11 @@ router.post('/api/account/prepare-mailbox', async (_req, res) => {
   }
 });
 
-router.post('/api/account/auto-register', async (_req, res) => {
+router.post('/api/account/auto-register', async (req, res) => {
   try {
-    const r = await runOneRegisterAttempt();
-    res.json(r);
+    const soft = !!(req.body && req.body.soft_fail);
+    const r = await runOneRegisterAttempt({ soft_fail: soft });
+    res.status(r.ok ? 200 : 400).json(r);
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
@@ -297,9 +380,10 @@ router.post('/api/account/auto-register-batch', (req, res) => {
   const tm = config.getTempMail();
   const body = req.body || {};
   const job = startBatchRegisterJob({
-    success_target: body.success_target ?? tm.success_target ?? 3,
-    max_attempts: body.max_attempts ?? body.batch_count ?? tm.batch_count ?? 5,
+    success_target: body.success_target ?? tm.success_target ?? 5,
+    max_attempts: body.max_attempts ?? body.batch_count ?? Math.max(5, tm.batch_count || 5),
     concurrent: body.concurrent ?? tm.concurrent ?? 1,
+    soft_fail: !!body.soft_fail,
   });
   res.json({ ok: true, job_id: job.id, job });
 });
