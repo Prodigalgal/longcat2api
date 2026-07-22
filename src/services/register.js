@@ -112,6 +112,7 @@ export async function prepareRegisterMailbox() {
   }
   const pp = config.getProxyPool();
   let proxy = null;
+  let proxy_error = '';
   if (pp.enabled) {
     try {
       if (proxyStatus().status !== 'running') {
@@ -121,7 +122,9 @@ export async function prepareRegisterMailbox() {
       }
       proxy = getProxyUrl();
     } catch (e) {
-      throw new Error(`代理池启动失败: ${e.message}`);
+      // Soft-fail: still create mailbox; full auto register needs overseas egress + H5guard.
+      proxy_error = e.message || String(e);
+      console.warn('[Register] proxy start failed (continuing without local sing-box):', proxy_error);
     }
   }
   const addr = await createAddress(tm);
@@ -130,13 +133,16 @@ export async function prepareRegisterMailbox() {
     email: addr.address,
     mail_jwt: addr.jwt,
     proxy_url: proxy,
+    proxy_error: proxy_error || undefined,
     region: 'oversea',
     passport: 'https://passport.mykeeta.com',
     mykeeta_login_url: mykeetaLoginUrl,
     flow: summarizeFlow(),
+    auto_register_ready: false,
     tip:
-      '仅海外：用该邮箱打开 mykeeta_login_url 完成邮箱 OTP 注册/登录（勿走 passport.meituan.com）。' +
-      '成功后把 longcat.chat 的 Cookie（含 passport_token_key）导入。注册出口请走海外代理。',
+      '半自动：用该邮箱在 mykeeta_login_url 完成邮箱 OTP（海外 IP）。' +
+      '全自动注册尚未完成（mykeeta 需 H5guard/Yoda，裸 HTTP 会 403）。' +
+      '成功后把 longcat.chat Cookie（passport_token_key）导入账号池。',
   };
 }
 
