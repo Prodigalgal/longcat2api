@@ -349,8 +349,12 @@ async function trySolveYoda(page, onLog) {
     }
   }
 
-  const still = await page.locator('.yoda-sudoku-wrap, canvas.sudoku-canvas').first().isVisible().catch(() => false);
-  if (!still) {
+  const stillVisible = await page
+    .locator('.yoda-sudoku-wrap, canvas.sudoku-canvas')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (!stillVisible) {
     log(onLog, 'Yoda cleared after AI path');
     return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
   }
