@@ -1,26 +1,30 @@
 /**
  * Full-auto LongCat overseas email registration via Playwright.
  *
- * H5Guard cannot be bypassed with bare HTTP — browser loads real hooks.
- * AI captcha (captchaAi) is **last resort only** after UI retries fail.
- *
- * Slow network: long waits / high timeouts (LongCat & mykeeta are often slow).
+ * Critical UI facts (reverse-engineered 2026-07):
+ *  - Default view is **phone** login, not email.
+ *  - Must click **「Continue with email」** first.
+ *  - Email field: input[placeholder*="Email"] / input.oversea-input-container
+ *  - Submit is **div.submit-btn** (NOT <button>).
+ *  - After submit, Yoda **sudoku/connect-dots** often appears (canvas.sudoku-canvas).
+ *  - Bare HTTP → 403; browser loads H5Guard.
+ *  - AI captcha is last-resort only for Yoda after wait.
  */
 
 import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
 import { config } from '../config.js';
 import { createAddress, isTempMailConfigured, waitForCode } from './tempMail.js';
 import { buildLoginPageUrl, MYKEETA } from './mykeetaClient.js';
 import { getProxyUrl, startProxy, proxyStatus, rotateProxy } from './proxyPool.js';
-import { getCaptchaAiConfig, solveCaptchaWithAi } from './captchaAi.js';
+import { getCaptchaAiConfig, solveCaptchaWithAi, solveYodaSudokuWithAi } from './captchaAi.js';
 
-/** Slow-site defaults (override via env) */
 const SLOW = {
   gotoMs: envInt('LONGCAT2API_REG_GOTO_MS', 120000),
   actionMs: envInt('LONGCAT2API_REG_ACTION_MS', 45000),
   h5guardMs: envInt('LONGCAT2API_REG_H5GUARD_MS', 8000),
-  afterClickMs: envInt('LONGCAT2API_REG_AFTER_CLICK_MS', 5000),
-  otpUiMs: envInt('LONGCAT2API_REG_OTP_UI_MS', 90000),
+  afterClickMs: envInt('LONGCAT2API_REG_AFTER_CLICK_MS', 6000),
+  otpUiMs: envInt('LONGCAT2API_REG_OTP_UI_MS', 120000),
   redirectMs: envInt('LONGCAT2API_REG_REDIRECT_MS', 120000),
   totalMs: envInt('LONGCAT2API_REGISTER_TIMEOUT_MS', 420000),
   otpDefaultSec: envInt('LONGCAT2API_REGISTER_OTP_TIMEOUT', 240),
@@ -44,15 +48,19 @@ function randomPassword(len = 14) {
   return s;
 }
 
+async function sleep(ms) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 async function ensureProxy(onLog) {
   const pp = config.getProxyPool();
   if (!pp.enabled) {
-    log(onLog, 'proxy_pool disabled — browser uses direct egress (must be non-CN for register)');
+    log(onLog, 'proxy_pool disabled — direct egress (prefer non-CN)');
     return null;
   }
   try {
     if (proxyStatus().status !== 'running') {
-      log(onLog, 'starting sing-box proxy pool...');
+      log(onLog, 'starting sing-box...');
       await startProxy({ pickRandom: true });
     } else {
       await rotateProxy();
@@ -61,7 +69,7 @@ async function ensureProxy(onLog) {
     log(onLog, `proxy ready: ${url}`);
     return url;
   } catch (e) {
-    log(onLog, `proxy failed: ${e.message}; continuing direct`);
+    log(onLog, `proxy failed: ${e.message}; direct`);
     return null;
   }
 }
@@ -76,61 +84,241 @@ function toPlaywrightProxy(proxyUrl) {
   }
 }
 
-async function sleep(ms) {
-  await new Promise((r) => setTimeout(r, ms));
+function cookiesToHeader(cookies) {
+  const domains = ['longcat.chat', 'mykeeta.com', 'meituan.com'];
+  const map = new Map();
+  for (const c of cookies) {
+    if (domains.some((d) => (c.domain || '').includes(d))) map.set(c.name, c.value);
+  }
+  return {
+    header: [...map.entries()].map(([k, v]) => `${k}=${v}`).join('; '),
+    passport_token: map.get('passport_token_key') || '',
+    lxsdk_cuid: map.get('_lxsdk_cuid') || '',
+    lxsdk_s: map.get('_lxsdk_s') || '',
+  };
 }
 
-async function clickContinue(page) {
+function attachNetworkWatch(page, state) {
+  page.on('response', async (res) => {
+    try {
+      const u = res.url();
+      if (!/passport\.mykeeta\.com\/api\//i.test(u)) return;
+      const status = res.status();
+      let body = '';
+      try {
+        body = (await res.text()).slice(0, 400);
+      } catch {
+        /* ignore */
+      }
+      state.apiLogs.push({ u: u.slice(0, 160), status, body: body.slice(0, 240) });
+      if (/userriskcheck/i.test(u) && status >= 200 && status < 300) state.riskOk = true;
+      if (/emailloginapply|emailsignupapply/i.test(u) && status >= 200 && status < 300) {
+        if (/serialNumber|serial_number/i.test(body) || !/"error"\s*:/.test(body)) state.applyOk = true;
+      }
+      if (status === 403) state.got403 = true;
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+/** Switch from default phone UI to email UI */
+async function switchToEmail(page, onLog) {
+  const body = await page.locator('body').innerText().catch(() => '');
+  if (/email address|邮箱/i.test(body) && !/continue with email/i.test(body)) {
+    log(onLog, 'already on email form');
+    return;
+  }
   const candidates = [
-    page.getByRole('button', { name: /continue|继续|下一步|next|sign up|log in|登录|注册/i }),
-    page.locator('button:has-text("Continue")'),
-    page.locator('button:has-text("继续")'),
-    page.locator('.set-password-continue-btn'),
-    page.locator('button[type="submit"]'),
+    page.getByText(/continue with email/i),
+    page.getByText(/邮箱登录|使用邮箱|邮件/i),
+    page.locator('text=Continue with email'),
   ];
   for (const loc of candidates) {
     try {
-      if (await loc.count()) {
-        const el = loc.first();
-        if (await el.isVisible({ timeout: 2000 })) {
-          await el.click({ timeout: SLOW.actionMs });
-          return true;
-        }
+      if (await loc.first().isVisible({ timeout: 3000 })) {
+        await loc.first().click({ timeout: 10000 });
+        log(onLog, 'clicked Continue with email');
+        await sleep(2500);
+        return;
       }
     } catch {
       /* next */
     }
   }
-  await page.keyboard.press('Enter');
-  return false;
+  // Fallback: if phone inputs visible, must switch
+  const phone = page.locator('input[type="tel"], .oversea-mobile-input');
+  if (await phone.first().isVisible().catch(() => false)) {
+    throw new Error('phone login UI still shown; cannot find Continue with email');
+  }
 }
 
-async function fillEmail(page, email) {
+async function fillEmail(page, email, onLog) {
   const sels = [
+    'input[placeholder*="Email" i]',
+    'input[placeholder*="email" i]',
+    'input.oversea-input-container',
     'input[type="email"]',
-    'input[name="email"]',
-    'input[autocomplete="email"]',
-    '.login-email-input-container input',
-    '.login-input input',
     'input[type="text"]',
   ];
   for (const sel of sels) {
     const loc = page.locator(sel).first();
     try {
-      if ((await loc.count()) && (await loc.isVisible({ timeout: 3000 }))) {
-        await loc.click({ timeout: SLOW.actionMs });
+      if ((await loc.count()) && (await loc.isVisible({ timeout: 4000 }))) {
+        // skip country code field
+        const ph = (await loc.getAttribute('placeholder')) || '';
+        const cls = (await loc.getAttribute('class')) || '';
+        if (/mobile|code-input|tel/i.test(cls) && !/email/i.test(ph + cls)) continue;
+        await loc.click({ timeout: 10000 });
         await loc.fill('');
-        await loc.pressSequentially(email, { delay: 40 });
+        await loc.pressSequentially(email, { delay: 35 });
+        // dispatch input events for React
+        await loc.evaluate((el, v) => {
+          el.value = v;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, email);
+        log(onLog, `filled email via ${sel}`);
         return true;
       }
     } catch {
       /* next */
     }
   }
-  throw new Error('email input not found on mykeeta login page');
+  throw new Error('email input not found (did switchToEmail run?)');
 }
 
-async function fillOtp(page, code) {
+/** Submit is div.submit-btn, not a real <button> */
+async function clickSubmitContinue(page, onLog) {
+  const strategies = [
+    async () => {
+      const btn = page.locator('div.submit-btn').first();
+      if (await btn.isVisible({ timeout: 2000 })) {
+        await btn.click({ force: true });
+        return 'div.submit-btn';
+      }
+      return null;
+    },
+    async () => {
+      const btn = page.getByText('Continue', { exact: true }).last();
+      if (await btn.isVisible({ timeout: 2000 })) {
+        await btn.click({ force: true });
+        return 'text=Continue exact';
+      }
+      return null;
+    },
+    async () => {
+      await page.evaluate(() => {
+        const nodes = [...document.querySelectorAll('div.submit-btn, div, span, button')];
+        const el =
+          nodes.find((n) => n.classList?.contains('submit-btn')) ||
+          nodes.find((n) => (n.innerText || '').trim() === 'Continue' && n.children.length === 0);
+        if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      });
+      return 'evaluate click';
+    },
+  ];
+  for (const s of strategies) {
+    try {
+      const name = await s();
+      if (name) {
+        log(onLog, `submit via ${name}`);
+        return true;
+      }
+    } catch (e) {
+      log(onLog, `submit strategy fail: ${e.message}`);
+    }
+  }
+  return false;
+}
+
+async function waitCanvasReady(page) {
+  const canvas = page.locator('canvas.sudoku-canvas, .sudoku-image canvas, canvas').first();
+  for (let i = 0; i < 20; i++) {
+    if (await canvas.isVisible().catch(() => false)) {
+      const loading = page.locator('.sudoku-loading, text=Loading');
+      const still = await loading.isVisible().catch(() => false);
+      if (!still) return canvas;
+    }
+    await sleep(500);
+  }
+  return canvas;
+}
+
+/**
+ * Yoda connect-dots / sudoku: wait first; AI last resort.
+ * AI returns POINTS as x,y ratios relative to canvas.
+ */
+async function trySolveYoda(page, onLog) {
+  const body = await page.locator('body').innerText().catch(() => '');
+  const yodaVisible = await page.locator('#yodaVerify, .yoda-verify-container, .yoda-sudoku-wrap, .sudoku-canvas').first().isVisible().catch(() => false);
+  if (!yodaVisible && !/tap icons|connect the dots|shortest line|安全验证|yoda/i.test(body)) {
+    return { handled: false };
+  }
+
+  log(onLog, 'Yoda challenge detected — wait 5s (no AI yet)...');
+  await sleep(5000);
+  const still = await page.locator('#yodaVerify, .yoda-sudoku-wrap, canvas.sudoku-canvas').first().isVisible().catch(() => false);
+  if (!still) {
+    log(onLog, 'Yoda gone without AI');
+    return { handled: true, method: 'wait' };
+  }
+
+  // refresh once (non-AI)
+  try {
+    const refresh = page.locator('.sudoku-operate-refresh, img[alt="refresh"]').first();
+    if (await refresh.isVisible({ timeout: 1500 })) {
+      await refresh.click();
+      log(onLog, 'clicked yoda refresh');
+      await sleep(4000);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const ca = getCaptchaAiConfig();
+  if (!ca.ready) {
+    return { handled: false, error: 'Yoda present; captcha_ai not enabled (last-resort only)' };
+  }
+
+  const canvas = await waitCanvasReady(page);
+  if (!(await canvas.isVisible().catch(() => false))) {
+    return { handled: false, error: 'Yoda canvas not ready' };
+  }
+
+  log(onLog, 'AI captcha fallback for Yoda sudoku (last resort)...');
+  const box = await canvas.boundingBox();
+  const shot = await page
+    .locator('.yoda-modal-content, .yoda-sudoku-wrap, #yodaVerify')
+    .first()
+    .screenshot({ type: 'png' })
+    .catch(() => page.screenshot({ type: 'png' }));
+
+  const ai = await solveYodaSudokuWithAi(shot);
+  if (!ai.ok || !ai.points?.length) {
+    log(onLog, `AI sudoku parse: ${ai.error || ai.raw || 'no points'}`);
+    return { handled: false, error: `AI could not extract connect-dot points: ${ai.error || ''}` };
+  }
+  const points = ai.points;
+
+  if (!box) return { handled: false, error: 'no canvas box' };
+  log(onLog, `AI points=${JSON.stringify(points)}`);
+  for (const [rx, ry] of points) {
+    const x = box.x + Math.min(0.98, Math.max(0.02, rx)) * box.width;
+    const y = box.y + Math.min(0.98, Math.max(0.02, ry)) * box.height;
+    await page.mouse.click(x, y);
+    await sleep(350);
+  }
+  await sleep(5000);
+  const gone = !(await page.locator('.yoda-sudoku-wrap, canvas.sudoku-canvas').first().isVisible().catch(() => false));
+  if (gone) {
+    log(onLog, 'Yoda cleared after AI clicks');
+    return { handled: true, method: 'ai_sudoku' };
+  }
+  return { handled: false, error: 'Yoda still visible after AI clicks' };
+}
+
+async function fillOtp(page, code, onLog) {
   const sels = [
     'input[inputmode="numeric"]',
     '.verify-code-input input',
@@ -142,8 +330,9 @@ async function fillOtp(page, code) {
     const loc = page.locator(sel).first();
     try {
       if ((await loc.count()) && (await loc.isVisible({ timeout: 2000 }))) {
-        await loc.click({ timeout: SLOW.actionMs });
+        await loc.click();
         await loc.fill(String(code));
+        log(onLog, `OTP filled via ${sel}`);
         return true;
       }
     } catch {
@@ -154,171 +343,11 @@ async function fillOtp(page, code) {
   const n = await boxes.count();
   if (n >= 4) {
     const digits = String(code).split('');
-    for (let i = 0; i < Math.min(n, digits.length); i++) {
-      await boxes.nth(i).fill(digits[i]);
-    }
+    for (let i = 0; i < Math.min(n, digits.length); i++) await boxes.nth(i).fill(digits[i]);
+    log(onLog, 'OTP filled multi-box');
     return true;
   }
   throw new Error('OTP input not found');
-}
-
-function cookiesToHeader(cookies) {
-  const domains = ['longcat.chat', 'mykeeta.com', 'meituan.com'];
-  const map = new Map();
-  for (const c of cookies) {
-    if (domains.some((d) => (c.domain || '').includes(d))) {
-      map.set(c.name, c.value);
-    }
-  }
-  return {
-    header: [...map.entries()].map(([k, v]) => `${k}=${v}`).join('; '),
-    passport_token: map.get('passport_token_key') || '',
-    lxsdk_cuid: map.get('_lxsdk_cuid') || '',
-    lxsdk_s: map.get('_lxsdk_s') || '',
-  };
-}
-
-function looksLikeYoda(text) {
-  return /yoda|slider|slide to|security verification|安全验证|拖动|滑块|拼图|verify you are human/i.test(
-    text || ''
-  );
-}
-
-function looksLikeImageCaptcha(text) {
-  return /captcha|验证码|enter the code|picture|图形/i.test(text || '');
-}
-
-/**
- * Try non-AI handling first; AI only as last resort.
- */
-async function trySolveChallenge(page, onLog) {
-  const body = await page.locator('body').innerText().catch(() => '');
-  const hasYoda = looksLikeYoda(body);
-  const hasImg = looksLikeImageCaptcha(body);
-
-  // 1) Wait — challenge may auto-dismiss on slow networks
-  if (hasYoda || hasImg) {
-    log(onLog, 'challenge UI detected — wait 8s (no AI yet)...');
-    await sleep(8000);
-    const body2 = await page.locator('body').innerText().catch(() => '');
-    if (!looksLikeYoda(body2) && !looksLikeImageCaptcha(body2)) {
-      log(onLog, 'challenge cleared without AI');
-      return { handled: true, method: 'wait' };
-    }
-  } else {
-    return { handled: false };
-  }
-
-  // 2) Manual-ish: try common close / refresh buttons
-  try {
-    const refresh = page.getByRole('button', { name: /refresh|reload|换一张|刷新/i }).first();
-    if (await refresh.isVisible({ timeout: 1500 })) {
-      await refresh.click();
-      await sleep(3000);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // 3) LAST RESORT: AI vision
-  const ca = getCaptchaAiConfig();
-  if (!ca.ready) {
-    log(onLog, 'AI captcha not configured — cannot solve challenge');
-    return { handled: false, error: 'challenge present; captcha_ai disabled' };
-  }
-
-  log(onLog, 'AI captcha fallback (last resort)...');
-  const shot = await page.screenshot({ type: 'png', fullPage: false });
-
-  if (hasYoda && !hasImg) {
-    // Slider: AI estimates ratio, then drag
-    const ai = await solveCaptchaWithAi(shot, { kind: 'slider', contentType: 'image/png' });
-    if (!ai.ok || ai.ratio == null) {
-      return { handled: false, error: `AI slider failed: ${ai.error || 'no ratio'}` };
-    }
-    log(onLog, `AI slider ratio=${ai.ratio}`);
-    const slider = page
-      .locator(
-        '[class*="slider"] .slider-btn, [class*="yoda"] .slider, .yoda-slider-btn, .slide-verify-slider-mask-item, .handler'
-      )
-      .first();
-    try {
-      if (await slider.isVisible({ timeout: 3000 })) {
-        const box = await slider.boundingBox();
-        const track = page.locator('[class*="slider"], [class*="slide-verify"]').first();
-        const trackBox = (await track.boundingBox().catch(() => null)) || box;
-        if (box && trackBox) {
-          const dist = Math.max(40, (trackBox.width || 300) * ai.ratio - box.width / 2);
-          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-          await page.mouse.down();
-          await page.mouse.move(box.x + dist, box.y + box.height / 2, { steps: 28 });
-          await sleep(200);
-          await page.mouse.up();
-          await sleep(4000);
-          log(onLog, 'AI slider drag done');
-          return { handled: true, method: 'ai_slider' };
-        }
-      }
-    } catch (e) {
-      return { handled: false, error: `slider drag failed: ${e.message}` };
-    }
-  }
-
-  // Image captcha: find img + input
-  const ai = await solveCaptchaWithAi(shot, { kind: 'image', contentType: 'image/png' });
-  if (!ai.ok || !ai.code) {
-    return { handled: false, error: `AI image captcha failed: ${ai.error || 'empty'}` };
-  }
-  log(onLog, `AI image code=${ai.code}`);
-  const input = page
-    .locator(
-      'input[name*="captcha" i], input[placeholder*="code" i], input[placeholder*="验证" i], .captcha input'
-    )
-    .first();
-  try {
-    if (await input.isVisible({ timeout: 3000 })) {
-      await input.fill(ai.code);
-      await clickContinue(page);
-      await sleep(4000);
-      return { handled: true, method: 'ai_image' };
-    }
-  } catch (e) {
-    return { handled: false, error: `fill captcha failed: ${e.message}` };
-  }
-  return { handled: false, error: 'captcha input not found for AI code' };
-}
-
-/**
- * Watch network for email apply success to know OTP was requested.
- */
-function attachNetworkWatch(page, state) {
-  page.on('response', async (res) => {
-    try {
-      const u = res.url();
-      // only business APIs on passport host (ignore CDN yoda.global.js etc.)
-      if (!/passport\.mykeeta\.com\/api\//i.test(u)) return;
-      const status = res.status();
-      let body = '';
-      try {
-        body = (await res.text()).slice(0, 400);
-      } catch {
-        /* ignore */
-      }
-      state.apiLogs.push({ u: u.slice(0, 160), status, body: body.slice(0, 240) });
-      if (/userriskcheck/i.test(u) && status >= 200 && status < 300) {
-        state.riskOk = true;
-        if (/user_ticket|userTicket|ticket/i.test(body)) state.gotTicket = true;
-      }
-      if (/emailloginapply|emailsignupapply/i.test(u) && status >= 200 && status < 300) {
-        if (/serialNumber|serial_number/i.test(body) || !/"error"\s*:/.test(body)) {
-          state.applyOk = true;
-        }
-      }
-      if (status === 403) state.got403 = true;
-    } catch {
-      /* ignore */
-    }
-  });
 }
 
 /**
@@ -326,9 +355,7 @@ function attachNetworkWatch(page, state) {
  */
 export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {}) {
   const tm = config.getTempMail();
-  if (!isTempMailConfigured(tm)) {
-    throw new Error('临时邮箱未配置');
-  }
+  if (!isTempMailConfigured(tm)) throw new Error('临时邮箱未配置');
 
   const password = randomPassword();
   log(onLog, 'creating temp mailbox...');
@@ -339,20 +366,17 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
 
   const proxyUrl = await ensureProxy(onLog);
   const loginUrl = buildLoginPageUrl();
-  log(onLog, `open ${loginUrl} (slow-site timeouts goto=${SLOW.gotoMs}ms total=${timeoutMs}ms)`);
+  log(onLog, `open ${loginUrl}`);
 
-  const headless = process.env.LONGCAT2API_REGISTER_HEADLESS !== '0';
-  // K8s readOnlyRootFilesystem: ensure /tmp parents exist before chromium mkdtemp
-  const { mkdirSync } = await import('node:fs');
-  for (const d of ['/tmp', '/tmp/playwright-artifacts', process.env.TMPDIR, process.env.HOME].filter(
-    Boolean
-  )) {
+  for (const d of ['/tmp', '/tmp/playwright-artifacts', process.env.TMPDIR, process.env.HOME].filter(Boolean)) {
     try {
       mkdirSync(d, { recursive: true });
     } catch {
       /* ignore */
     }
   }
+
+  const headless = process.env.LONGCAT2API_REGISTER_HEADLESS !== '0';
   let browser;
   try {
     browser = await chromium.launch({
@@ -370,140 +394,94 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
       timeout: SLOW.gotoMs,
     });
   } catch (e) {
-    throw new Error(
-      `Playwright chromium launch failed: ${e.message}. ` +
-        `Need Chromium in image + writable /tmp (PLAYWRIGHT_BROWSERS_PATH).`
-    );
+    throw new Error(`Playwright launch failed: ${e.message}`);
   }
 
   const context = await browser.newContext({
     locale: 'en-US',
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 800 },
+    viewport: { width: 1280, height: 900 },
   });
   const page = await context.newPage();
   page.setDefaultTimeout(SLOW.actionMs);
   page.setDefaultNavigationTimeout(SLOW.gotoMs);
 
-  const net = { apiLogs: [], applyOk: false, got403: false, riskOk: false, gotTicket: false };
+  const net = { apiLogs: [], applyOk: false, got403: false, riskOk: false };
   attachNetworkWatch(page, net);
-
   const deadline = Date.now() + timeoutMs;
+
   try {
     await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: SLOW.gotoMs });
-    log(onLog, `waiting H5guard init ${SLOW.h5guardMs}ms...`);
+    log(onLog, `waiting H5guard ${SLOW.h5guardMs}ms...`);
     await sleep(SLOW.h5guardMs);
-    // Wait for token standard if present
     await page
       .waitForFunction(
         () => window.H5guard || window.TokenStandardization || window.__TOKEN_STANDARD_INTERCEPTOR__,
         null,
         { timeout: 30000 }
       )
-      .catch(() => log(onLog, 'H5guard global not detected (continue anyway)'));
+      .catch(() => log(onLog, 'H5guard global not detected (continue)'));
 
     log(onLog, `page title: ${await page.title()}`);
 
-    try {
-      await page.getByRole('button', { name: /accept|agree|ok|got it/i }).first().click({ timeout: 3000 });
-    } catch {
-      /* ignore */
-    }
+    // *** critical: leave phone UI ***
+    await switchToEmail(page, onLog);
+    await fillEmail(page, email, onLog);
+    await sleep(1000);
 
-    // Switch to email tab if mobile is default
-    try {
-      const emailTab = page.getByText(/email|邮箱|e-mail/i).first();
-      if (await emailTab.isVisible({ timeout: 3000 })) {
-        await emailTab.click();
-        await sleep(1000);
-      }
-    } catch {
-      /* ignore */
-    }
+    // Submit email
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      log(onLog, `submit continue attempt ${attempt}/3...`);
+      await clickSubmitContinue(page, onLog);
+      await sleep(SLOW.afterClickMs);
 
-    // Accept terms if checkbox present
-    try {
-      const boxes = page.locator('input[type="checkbox"]');
-      const n = await boxes.count();
-      for (let i = 0; i < n; i++) {
-        const b = boxes.nth(i);
-        if (await b.isVisible().catch(() => false)) {
-          const checked = await b.isChecked().catch(() => false);
-          if (!checked) {
-            await b.check({ force: true }).catch(async () => {
-              await b.click({ force: true });
-            });
-            log(onLog, 'checked agreement checkbox');
-          }
+      // Yoda after submit?
+      const y = await trySolveYoda(page, onLog);
+      if (y.error) log(onLog, `yoda: ${y.error}`);
+      if (y.handled) {
+        await sleep(3000);
+        // may need submit again after yoda
+        if (!(await page.locator('input[inputmode="numeric"], .verify-code-input input, input[maxlength="6"]').first().isVisible().catch(() => false))) {
+          await clickSubmitContinue(page, onLog);
+          await sleep(SLOW.afterClickMs);
         }
       }
-    } catch {
-      /* ignore */
-    }
 
-    log(onLog, 'fill email...');
-    await fillEmail(page, email);
-    await sleep(1200);
-
-    // Multi-attempt continue until risk/apply API or OTP UI
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      log(onLog, `click continue attempt ${attempt}/4...`);
-      await clickContinue(page);
-      await sleep(SLOW.afterClickMs + attempt * 1500);
-      let ch = await trySolveChallenge(page, onLog);
-      if (ch.error) log(onLog, `challenge: ${ch.error}`);
-      if (ch.handled) await sleep(3000);
-
-      const otpMaybe = await page
-        .locator(
-          '.pc-login-verify-code-container, .verify-code-input, input[inputmode="numeric"], input[maxlength="6"]'
-        )
+      if (net.riskOk || net.applyOk) break;
+      const otp = await page
+        .locator('input[inputmode="numeric"], .verify-code-input input, input[maxlength="6"], .pc-login-verify-code-container')
         .first()
         .isVisible()
         .catch(() => false);
-      if (otpMaybe || net.applyOk || net.riskOk) {
-        log(onLog, `progress: otpUI=${otpMaybe} riskOk=${net.riskOk} applyOk=${net.applyOk}`);
-        break;
-      }
+      if (otp) break;
     }
 
-    log(
-      onLog,
-      `network: riskOk=${net.riskOk} applyOk=${net.applyOk} got403=${net.got403} logs=${net.apiLogs.length}`
-    );
-    if (net.apiLogs.length) {
-      for (const L of net.apiLogs.slice(-8)) {
-        log(onLog, `  api ${L.status} ${L.u} ${L.body.slice(0, 100)}`);
-      }
+    log(onLog, `network riskOk=${net.riskOk} applyOk=${net.applyOk} 403=${net.got403} logs=${net.apiLogs.length}`);
+    for (const L of net.apiLogs.slice(-8)) {
+      log(onLog, `  api ${L.status} ${L.u} ${L.body.slice(0, 100)}`);
     }
 
-    // Wait OTP UI longer
-    log(onLog, `waiting for OTP UI (up to ${SLOW.otpUiMs}ms)...`);
+    log(onLog, `waiting OTP UI up to ${SLOW.otpUiMs}ms...`);
     const otpVisible = await page
       .waitForSelector(
-        '.pc-login-verify-code-container, .verify-code-input, input[inputmode="numeric"], input[maxlength="6"], input[maxlength="1"]',
+        'input[inputmode="numeric"], .verify-code-input input, .pc-login-verify-code-container input, input[maxlength="6"], input[maxlength="1"]',
         { timeout: SLOW.otpUiMs }
       )
       .then(() => true)
       .catch(() => false);
 
     if (!otpVisible) {
-      // One more challenge attempt
-      await trySolveChallenge(page, onLog);
+      await trySolveYoda(page, onLog);
       const otp2 = await page
-        .waitForSelector(
-          '.pc-login-verify-code-container, .verify-code-input, input[inputmode="numeric"]',
-          { timeout: 30000 }
-        )
+        .waitForSelector('input[inputmode="numeric"], input[maxlength="6"], .verify-code-input input', {
+          timeout: 30000,
+        })
         .then(() => true)
         .catch(() => false);
       if (!otp2) {
-        const snap = await page.screenshot({ type: 'png' }).catch(() => null);
         throw new Error(
-          `OTP UI not shown (applyOk=${net.applyOk} 403=${net.got403}). ` +
-            `Page may still be loading or blocked. url=${page.url()}` +
-            (snap ? ` screenshot_bytes=${snap.length}` : '')
+          `OTP UI not shown (riskOk=${net.riskOk} applyOk=${net.applyOk} 403=${net.got403}). url=${page.url()}`
         );
       }
     }
@@ -512,75 +490,54 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
       (Number(tm.otp_timeout) || SLOW.otpDefaultSec) * 1000,
       Math.max(60000, deadline - Date.now() - 60000)
     );
-    log(onLog, `waiting email OTP (timeout ${Math.floor(otpTimeout / 1000)}s, long wait OK)...`);
-    const code = await waitForCode(tm, mailJwt, {
-      timeout: otpTimeout,
-      pollInterval: 4000,
-    });
+    log(onLog, `waiting email OTP (${Math.floor(otpTimeout / 1000)}s)...`);
+    const code = await waitForCode(tm, mailJwt, { timeout: otpTimeout, pollInterval: 4000 });
     log(onLog, `got OTP: ${code}`);
-
-    await fillOtp(page, code);
+    await fillOtp(page, code, onLog);
     await sleep(600);
-    await clickContinue(page);
+    await clickSubmitContinue(page, onLog);
     await sleep(SLOW.afterClickMs);
+    await trySolveYoda(page, onLog);
 
-    // Optional challenge after OTP
-    await trySolveChallenge(page, onLog);
-
-    // Optional set-password
+    // optional password
     try {
-      const pwd = page
-        .locator('.signup-password-input-container input, .password-input input, input[type="password"]')
-        .first();
-      if ((await pwd.count()) && (await pwd.isVisible({ timeout: 8000 }))) {
-        log(onLog, 'set password page...');
+      const pwd = page.locator('input[type="password"]').first();
+      if (await pwd.isVisible({ timeout: 8000 })) {
+        log(onLog, 'set password...');
         await pwd.fill(password);
         const pwd2 = page.locator('input[type="password"]').nth(1);
-        if ((await pwd2.count()) && (await pwd2.isVisible())) {
-          await pwd2.fill(password);
-        }
-        await clickContinue(page);
+        if (await pwd2.isVisible().catch(() => false)) await pwd2.fill(password);
+        await clickSubmitContinue(page, onLog);
         await sleep(SLOW.afterClickMs);
       }
     } catch {
-      /* no password step */
+      /* none */
     }
 
-    log(onLog, `waiting longcat redirect (up to ${SLOW.redirectMs}ms)...`);
+    log(onLog, 'waiting longcat redirect...');
     await page
-      .waitForURL(/longcat\.chat/, { timeout: Math.min(SLOW.redirectMs, Math.max(15000, deadline - Date.now())) })
-      .catch(async () => {
-        await sleep(8000);
-      });
+      .waitForURL(/longcat\.chat/, {
+        timeout: Math.min(SLOW.redirectMs, Math.max(20000, deadline - Date.now())),
+      })
+      .catch(async () => sleep(8000));
 
     if (!page.url().includes('longcat.chat')) {
-      log(onLog, `still on ${page.url()}, goto longcat home (slow)...`);
-      await page.goto('https://longcat.chat/', {
-        waitUntil: 'domcontentloaded',
-        timeout: SLOW.gotoMs,
-      });
+      log(onLog, `goto longcat home from ${page.url()}`);
+      await page.goto('https://longcat.chat/', { waitUntil: 'domcontentloaded', timeout: SLOW.gotoMs });
     }
     await sleep(4000);
 
     let parsed = cookiesToHeader(await context.cookies());
     if (!parsed.passport_token) {
-      log(onLog, 'no passport_token yet — open /t and wait...');
-      await page.goto('https://longcat.chat/t', {
-        waitUntil: 'domcontentloaded',
-        timeout: SLOW.gotoMs,
-      });
+      await page.goto('https://longcat.chat/t', { waitUntil: 'domcontentloaded', timeout: SLOW.gotoMs });
       await sleep(5000);
       parsed = cookiesToHeader(await context.cookies());
     }
     if (!parsed.passport_token) {
-      throw new Error(
-        `no passport_token_key after login (url=${page.url()} cookies=${(await context.cookies())
-          .map((c) => c.name)
-          .join(',')})`
-      );
+      throw new Error(`no passport_token_key (url=${page.url()})`);
     }
 
-    log(onLog, `success passport_token_key=${parsed.passport_token.slice(0, 8)}...`);
+    log(onLog, `SUCCESS token=${parsed.passport_token.slice(0, 8)}...`);
     return {
       ok: true,
       email,
@@ -590,7 +547,7 @@ export async function registerOneAccount({ onLog, timeoutMs = SLOW.totalMs } = {
       passport_token: parsed.passport_token,
       lxsdk_cuid: parsed.lxsdk_cuid,
       lxsdk_s: parsed.lxsdk_s,
-      detail: `registered via mykeeta browser; final_url=${page.url()}`,
+      detail: `registered; url=${page.url()}`,
       mykeeta: MYKEETA.origin,
     };
   } finally {

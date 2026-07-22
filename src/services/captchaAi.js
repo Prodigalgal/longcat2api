@@ -57,6 +57,79 @@ function parseRatio(text) {
  * @param {{ kind?: 'image'|'slider', contentType?: string }} opts
  * @returns {Promise<{ ok: boolean, code?: string, ratio?: number, raw?: string, error?: string }>}
  */
+/**
+ * Yoda sudoku / connect-the-dots: return click points as [xRatio,yRatio] list.
+ * Prompt asks for POINTS=0.12,0.34;0.55,0.66 format.
+ */
+export async function solveYodaSudokuWithAi(imageBytes) {
+  const cfg = getCaptchaAiConfig();
+  if (!cfg.ready) return { ok: false, error: 'captcha_ai not configured' };
+  if (!imageBytes?.length) return { ok: false, error: 'empty image' };
+
+  const b64 = Buffer.from(imageBytes).toString('base64');
+  const dataUrl = `data:image/png;base64,${b64}`;
+  const prompt =
+    '这是美团/Keeta Yoda 验证码截图（连线/点选/九宫格）。' +
+    '请根据英文提示（如 Use the shortest line to connect the dots in brown / Tap icons in following order）' +
+    '给出应点击的顺序坐标，坐标为相对整张截图的比例 0~1。' +
+    '严格只输出一行：POINTS=x1,y1;x2,y2;x3,y3 例如 POINTS=0.20,0.45;0.50,0.45;0.80,0.45' +
+    '不要其他文字。';
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), cfg.timeout * 1000);
+    let res;
+    try {
+      res = await fetch(`${cfg.api_base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.api_key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: cfg.model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                { type: 'image_url', image_url: { url: dataUrl } },
+              ],
+            },
+          ],
+          max_tokens: 120,
+          temperature: 0,
+        }),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await res.text();
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, raw: text.slice(0, 200) };
+    const data = JSON.parse(text);
+    let content = data?.choices?.[0]?.message?.content || '';
+    if (Array.isArray(content)) {
+      content = content.map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
+    }
+    content = String(content || '');
+    console.log(`[CaptchaAI] sudoku raw=${JSON.stringify(content).slice(0, 200)}`);
+    const m = content.match(/POINTS\s*=\s*([0-9.,;\s]+)/i);
+    if (!m) return { ok: false, error: 'no POINTS in reply', raw: content };
+    const points = [];
+    for (const part of m[1].split(';')) {
+      const nums = part.split(',').map((x) => Number(String(x).trim()));
+      if (nums.length >= 2 && Number.isFinite(nums[0]) && Number.isFinite(nums[1])) {
+        points.push([nums[0], nums[1]]);
+      }
+    }
+    if (!points.length) return { ok: false, error: 'empty points', raw: content };
+    return { ok: true, points, raw: content };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 export async function solveCaptchaWithAi(imageBytes, opts = {}) {
   const cfg = getCaptchaAiConfig();
   if (!cfg.ready) {
