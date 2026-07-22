@@ -303,19 +303,58 @@ async function trySolveYoda(page, onLog) {
 
   if (!box) return { handled: false, error: 'no canvas box' };
   log(onLog, `AI points=${JSON.stringify(points)}`);
-  for (const [rx, ry] of points) {
-    const x = box.x + Math.min(0.98, Math.max(0.02, rx)) * box.width;
-    const y = box.y + Math.min(0.98, Math.max(0.02, ry)) * box.height;
-    await page.mouse.click(x, y);
-    await sleep(350);
+
+  // "connect the dots" needs a continuous drag, not discrete clicks
+  const title = await page.locator('.sudoku-title, .yoda-modal-content').first().innerText().catch(() => '');
+  const needDrag = /connect|line|shortest|连线|连接/i.test(title || '');
+  const xy = points.map(([rx, ry]) => [
+    box.x + Math.min(0.98, Math.max(0.02, rx)) * box.width,
+    box.y + Math.min(0.98, Math.max(0.02, ry)) * box.height,
+  ]);
+
+  if (needDrag && xy.length >= 2) {
+    log(onLog, 'Yoda mode=drag-connect');
+    await page.mouse.move(xy[0][0], xy[0][1]);
+    await page.mouse.down();
+    for (let i = 1; i < xy.length; i++) {
+      await page.mouse.move(xy[i][0], xy[i][1], { steps: 12 });
+      await sleep(80);
+    }
+    await page.mouse.up();
+  } else {
+    log(onLog, 'Yoda mode=tap-sequence');
+    for (const [x, y] of xy) {
+      await page.mouse.click(x, y);
+      await sleep(280);
+    }
   }
-  await sleep(5000);
-  const gone = !(await page.locator('.yoda-sudoku-wrap, canvas.sudoku-canvas').first().isVisible().catch(() => false));
-  if (gone) {
-    log(onLog, 'Yoda cleared after AI clicks');
-    return { handled: true, method: 'ai_sudoku' };
+
+  // Wait for success animation / modal close (slow network)
+  for (let i = 0; i < 20; i++) {
+    await sleep(500);
+    const visible = await page
+      .locator('.yoda-sudoku-wrap:visible, canvas.sudoku-canvas:visible, .yoda-verify-container.mask:visible')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    const success = await page.locator('.icon-success:visible').first().isVisible().catch(() => false);
+    if (success) {
+      log(onLog, 'Yoda success icon shown');
+      await sleep(1500);
+      break;
+    }
+    if (!visible) {
+      log(onLog, 'Yoda cleared after AI path');
+      return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
+    }
   }
-  return { handled: false, error: 'Yoda still visible after AI clicks' };
+
+  const still = await page.locator('.yoda-sudoku-wrap, canvas.sudoku-canvas').first().isVisible().catch(() => false);
+  if (!still) {
+    log(onLog, 'Yoda cleared after AI path');
+    return { handled: true, method: needDrag ? 'ai_sudoku_drag' : 'ai_sudoku_tap' };
+  }
+  return { handled: false, error: 'Yoda still visible after AI path' };
 }
 
 async function fillOtp(page, code, onLog) {

@@ -69,11 +69,15 @@ export async function solveYodaSudokuWithAi(imageBytes) {
   const b64 = Buffer.from(imageBytes).toString('base64');
   const dataUrl = `data:image/png;base64,${b64}`;
   const prompt =
-    '这是美团/Keeta Yoda 验证码截图（连线/点选/九宫格）。' +
-    '请根据英文提示（如 Use the shortest line to connect the dots in brown / Tap icons in following order）' +
-    '给出应点击的顺序坐标，坐标为相对整张截图的比例 0~1。' +
-    '严格只输出一行：POINTS=x1,y1;x2,y2;x3,y3 例如 POINTS=0.20,0.45;0.50,0.45;0.80,0.45' +
-    '不要其他文字。';
+    '这是美团/Keeta Yoda 验证码截图。常见类型：' +
+    '1) 按最短路径连接棕色圆点（connect dots / shortest line）；' +
+    '2) 按顺序点选图标（tap icons in order）。' +
+    '请根据截图里的英文提示与图案，给出按顺序经过的点坐标。' +
+    '坐标是相对整张截图宽高的比例 0~1（左上为 0,0）。' +
+    '连线题：给出折线上关键控制点（通常 3~6 个）。' +
+    '点选题：给出要点的中心点。' +
+    '严格只输出一行：POINTS=x1,y1;x2,y2;x3,y3' +
+    '示例 POINTS=0.25,0.55;0.50,0.40;0.75,0.55 不要其他文字。';
 
   try {
     const ctrl = new AbortController();
