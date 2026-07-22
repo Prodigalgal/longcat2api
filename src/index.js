@@ -15,6 +15,26 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 // init
 fs.mkdirSync(paths.data, { recursive: true });
+// Playwright / chromium need a real writable TMP (readOnlyRootFilesystem + emptyDir /tmp)
+const tmpRoot = process.env.TMPDIR || process.env.TEMP || '/tmp';
+try {
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  if (tmpRoot !== '/tmp') {
+    // also ensure classic /tmp for browser internals when TMPDIR is nested
+    fs.mkdirSync('/tmp', { recursive: true });
+  }
+} catch (e) {
+  console.warn('[startup] tmp mkdir:', e.message);
+}
+// Prefer broad /tmp for playwright artifact dirs (avoid nested missing parent races)
+if (!process.env.PLAYWRIGHT_ARTIFACTS_DIR) {
+  process.env.PLAYWRIGHT_ARTIFACTS_DIR = '/tmp/playwright-artifacts';
+}
+try {
+  fs.mkdirSync(process.env.PLAYWRIGHT_ARTIFACTS_DIR, { recursive: true });
+} catch {
+  /* ignore */
+}
 initDb();
 config.load();
 
