@@ -1,0 +1,31 @@
+{
+  "name": "longcat2api",
+  "version": "1.0.0",
+  "description": "LongCat 网页端 → OpenAI 兼容 API（chat/responses）· 临时邮箱注册 · CF 代理池 · 账号保活",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "db:init": "node -e \"import('./src/db/index.js').then(m => m.initDb())\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "longcat",
+    "openai",
+    "proxy",
+    "api"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "socks-proxy-agent": "^8.0.5",
+    "undici": "^7.5.0",
+    "uuid": "^11.1.0"
+  }
+}

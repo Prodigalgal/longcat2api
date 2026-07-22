@@ -1,0 +1,26 @@
+{
+  "api_keys": "sk-longcat",
+  "admin_password": "admin",
+  "default_mode": "oversea",
+  "temp_mail": {
+    "api_base": "https://apimail.example.com",
+    "admin_password": "YOUR_ADMIN_PASSWORD",
+    "domain": "",
+    "site_password": "",
+    "batch_count": 5,
+    "success_target": 3,
+    "concurrent": 2,
+    "concurrent_interval": 3.0,
+    "otp_timeout": 120
+  },
+  "proxy_pool": {
+    "enabled": false,
+    "sub_url": "https://proxy.example.com/sub?token=YOUR_TOKEN",
+    "listen_port": 17890,
+    "singbox_path": "",
+    "rotate_every": 1,
+    "refresh_interval": 3600,
+    "connect_retries": 5,
+    "fetch_sub_each_time": true
+  }
+}

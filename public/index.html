@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>longcat2api 管理面板</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3b82f6;
+      --ok: #22c55e;
+      --err: #ef4444;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid var(--border); background: #121a24;
+      position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header .badge { color: var(--muted); font-size: 12px; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .tabs button {
+      background: var(--panel); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .tabs button.active { background: var(--accent); border-color: var(--accent); }
+    .panel {
+      display: none; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px;
+    }
+    .panel.active { display: block; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    input, textarea, select {
+      width: 100%; background: #0d1218; border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 10px; font-size: 13px;
+    }
+    textarea { min-height: 100px; font-family: ui-monospace, monospace; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    button.btn {
+      background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+      padding: 9px 14px; cursor: pointer; font-size: 13px;
+    }
+    button.btn.secondary { background: #334155; }
+    button.btn.danger { background: var(--err); }
+    button.btn:disabled { opacity: .5; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+    .tag.ok { background: rgba(34,197,94,.15); color: var(--ok); }
+    .tag.bad { background: rgba(239,68,68,.15); color: var(--err); }
+    .tag.off { background: rgba(148,163,184,.15); color: var(--muted); }
+    #toast {
+      position: fixed; right: 16px; bottom: 16px; background: #1e293b; border: 1px solid var(--border);
+      padding: 10px 14px; border-radius: 8px; display: none; max-width: 420px; font-size: 13px; z-index: 50;
+    }
+    pre.log {
+      background: #0d1218; border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; max-height: 280px; overflow: auto; font-size: 12px; white-space: pre-wrap;
+    }
+    .login-mask {
+      position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 100;
+    }
+    .login-box {
+      width: 360px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+    }
+    .muted { color: var(--muted); font-size: 12px; }
+    h2 { font-size: 15px; margin: 0 0 8px; }
+    h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div id="loginMask" class="login-mask">
+    <div class="login-box">
+      <h2>管理员登录</h2>
+      <p class="muted">HTTP Basic：用户名 <code>admin</code>，密码为配置中的 admin_password</p>
+      <label>密码</label>
+      <input id="adminPass" type="password" placeholder="admin" />
+      <div class="actions">
+        <button class="btn" id="btnLogin">进入面板</button>
+      </div>
+      <p id="loginErr" class="muted" style="color:var(--err)"></p>
+    </div>
+  </div>
+
+  <header>
+    <h1>longcat2api <span class="badge">Node.js · SQLite</span></h1>
+    <div class="badge" id="healthInfo">—</div>
+  </header>
+
+  <div class="wrap">
+    <div class="tabs">
+      <button data-tab="accounts" class="active">账号</button>
+      <button data-tab="register">注册机</button>
+      <button data-tab="tempmail">临时邮箱</button>
+      <button data-tab="proxy">代理池</button>
+      <button data-tab="settings">设置</button>
+      <button data-tab="logs">日志/用量</button>
+      <button data-tab="test">接口测试</button>
+    </div>
+
+    <section id="tab-accounts" class="panel active">
+      <h2>账号池</h2>
+      <p class="muted">导入浏览器 Cookie（需含 <code>passport_token_key</code>）。CN 模式会轮询有效账号。</p>
+      <label>Cookie 字符串</label>
+      <textarea id="cookieInput" placeholder="_lxsdk_cuid=...; passport_token_key=...; _lxsdk_s=..."></textarea>
+      <div class="row">
+        <div>
+          <label>名称（可选）</label>
+          <input id="accName" placeholder="account-1" />
+        </div>
+        <div>
+          <label>邮箱（可选）</label>
+          <input id="accEmail" placeholder="xxx@mail.com" />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btnImportCookie">导入 Cookie</button>
+        <button class="btn secondary" id="btnRenewAll">全部保活探测</button>
+        <button class="btn secondary" id="btnRefreshAcc">刷新列表</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th><th>邮箱</th><th>状态</th><th>Cookie</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="accBody"></tbody>
+      </table>
+    </section>
+
+    <section id="tab-register" class="panel">
+      <h2>注册机</h2>
+      <p class="muted">创建 CF 临时邮箱 +（可选）代理。美团 Passport 需在浏览器完成注册，随后将 Cookie 绑定到 draft 账号。</p>
+      <div class="actions">
+        <button class="btn" id="btnPrepMail">准备邮箱（单次）</button>
+        <button class="btn" id="btnAutoReg">单次注册任务</button>
+        <button class="btn secondary" id="btnBatchReg">批量准备邮箱</button>
+      </div>
+      <h3>绑定 Cookie 到账号 ID</h3>
+      <div class="row">
+        <div>
+          <label>account_id</label>
+          <input id="bindId" />
+        </div>
+        <div>
+          <label>Cookie</label>
+          <input id="bindCookie" placeholder="passport_token_key=..." />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btnBind">绑定</button>
+      </div>
+      <h3>任务日志</h3>
+      <pre class="log" id="regLog">—</pre>
+    </section>
+
+    <section id="tab-tempmail" class="panel">
+      <h2>临时邮箱（Cloudflare Temp Mail）</h2>
+      <div class="row">
+        <div>
+          <label>API 地址</label>
+          <input id="tmBase" placeholder="https://apimail.example.com" />
+        </div>
+        <div>
+          <label>管理口令</label>
+          <input id="tmAdmin" type="password" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>域名（可空=自动）</label>
+          <input id="tmDomain" />
+        </div>
+        <div>
+          <label>站点密码 x-custom-auth（可空）</label>
+          <input id="tmSite" type="password" />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btnTmSave">保存</button>
+        <button class="btn secondary" id="btnTmTest">测试连接</button>
+      </div>
+      <pre class="log" id="tmLog">—</pre>
+    </section>
+
+    <section id="tab-proxy" class="panel">
+      <h2>CF / VLESS 代理池（sing-box）</h2>
+      <div class="row">
+        <div>
+          <label>启用</label>
+          <select id="pxEnabled"><option value="false">否</option><option value="true">是</option></select>
+        </div>
+        <div>
+          <label>本地端口</label>
+          <input id="pxPort" type="number" value="17890" />
+        </div>
+      </div>
+      <label>订阅 URL</label>
+      <input id="pxSub" placeholder="https://.../sub?token=..." />
+      <label>sing-box 路径（可空=自动）</label>
+      <input id="pxBin" placeholder="C:\\path\\sing-box.exe" />
+      <div class="actions">
+        <button class="btn" id="btnPxSave">保存</button>
+        <button class="btn secondary" id="btnPxStart">启动</button>
+        <button class="btn secondary" id="btnPxStop">停止</button>
+        <button class="btn secondary" id="btnPxRotate">轮换节点</button>
+        <button class="btn secondary" id="btnPxTest">连通测试</button>
+      </div>
+      <pre class="log" id="pxLog">—</pre>
+    </section>
+
+    <section id="tab-settings" class="panel">
+      <h2>系统设置</h2>
+      <div class="row">
+        <div>
+          <label>API Keys（逗号分隔）</label>
+          <input id="cfgKeys" />
+        </div>
+        <div>
+          <label>Admin 密码</label>
+          <input id="cfgAdmin" type="password" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>默认模式</label>
+          <select id="cfgMode">
+            <option value="oversea">oversea（免 Cookie）</option>
+            <option value="cn">cn（账号池 Cookie）</option>
+          </select>
+        </div>
+        <div>
+          <label>保活间隔（秒）</label>
+          <input id="cfgKeepalive" type="number" />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btnCfgSave">保存设置</button>
+      </div>
+    </section>
+
+    <section id="tab-logs" class="panel">
+      <h2>请求日志 / 用量</h2>
+      <div class="actions">
+        <button class="btn secondary" id="btnLogs">刷新</button>
+      </div>
+      <h3>用量</h3>
+      <pre class="log" id="usageLog">—</pre>
+      <h3>最近请求</h3>
+      <pre class="log" id="reqLog">—</pre>
+    </section>
+
+    <section id="tab-test" class="panel">
+      <h2>接口测试</h2>
+      <div class="row">
+        <div>
+          <label>模型</label>
+          <input id="testModel" value="longcat-flash" />
+        </div>
+        <div>
+          <label>API Key</label>
+          <input id="testKey" value="sk-longcat" />
+        </div>
+      </div>
+      <label>用户消息</label>
+      <textarea id="testMsg">你好，用一句话介绍 LongCat</textarea>
+      <div class="actions">
+        <button class="btn" id="btnTestChat">调用 /v1/chat/completions</button>
+        <button class="btn secondary" id="btnTestResp">调用 /v1/responses</button>
+      </div>
+      <pre class="log" id="testLog">—</pre>
+    </section>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    let auth = sessionStorage.getItem('lc_admin_auth') || '';
+
+    const $ = (id) => document.getElementById(id);
+    const toast = (msg) => {
+      const el = $('toast');
+      el.textContent = msg;
+      el.style.display = 'block';
+      setTimeout(() => (el.style.display = 'none'), 3200);
+    };
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign(
+        { 'Content-Type': 'application/json', Authorization: auth },
+        opts.headers || {}
+      );
+      const res = await fetch(path, { ...opts, headers });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+      if (res.status === 401) throw new Error('Unauthorized');
+      if (!res.ok && data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message || text);
+      if (!res.ok && data.message) throw new Error(data.message);
+      return data;
+    }
+
+    function showApp() {
+      $('loginMask').style.display = 'none';
+      refreshAll();
+    }
+
+    $('btnLogin').onclick = async () => {
+      const pass = $('adminPass').value || 'admin';
+      auth = 'Basic ' + btoa('admin:' + pass);
+      try {
+        await api('/api/config');
+        sessionStorage.setItem('lc_admin_auth', auth);
+        $('loginErr').textContent = '';
+        showApp();
+      } catch (e) {
+        $('loginErr').textContent = '登录失败: ' + e.message;
+      }
+    };
+
+    if (auth) {
+      api('/api/config').then(showApp).catch(() => {
+        sessionStorage.removeItem('lc_admin_auth');
+        auth = '';
+      });
+    }
+
+    document.querySelectorAll('.tabs button').forEach((btn) => {
+      btn.onclick = () => {
+        document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+        btn.classList.add('active');
+        $('tab-' + btn.dataset.tab).classList.add('active');
+      };
+    });
+
+    async function loadAccounts() {
+      const data = await api('/api/accounts');
+      const body = $('accBody');
+      body.innerHTML = '';
+      for (const a of data.accounts || []) {
+        const tr = document.createElement('tr');
+        const st = !a.enabled
+          ? '<span class="tag off">disabled</span>'
+          : a.is_valid
+            ? '<span class="tag ok">valid</span>'
+            : '<span class="tag bad">invalid</span>';
+        tr.innerHTML = `
+          <td>${esc(a.name)}<div class="muted">${esc(a.id)}</div></td>
+          <td>${esc(a.email || '—')}</td>
+          <td>${st}<div class="muted">${esc(a.renew_error || '')}</div></td>
+          <td>${esc(a.cookie_masked || '')}</td>
+          <td>
+            <button class="btn secondary" data-act="test" data-id="${a.id}">测试</button>
+            <button class="btn danger" data-act="del" data-id="${a.id}">删除</button>
+          </td>`;
+        body.appendChild(tr);
+      }
+      body.onclick = async (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const id = btn.dataset.id;
+        if (btn.dataset.act === 'del') {
+          if (!confirm('删除账号 ' + id + ' ?')) return;
+          await api('/api/account/' + id, { method: 'DELETE' });
+          toast('已删除');
+          loadAccounts();
+        }
+        if (btn.dataset.act === 'test') {
+          const r = await api('/api/account/' + id + '/test', { method: 'POST', body: '{}' });
+          toast(r.ok ? '有效: ' + r.detail : '无效: ' + r.detail);
+          loadAccounts();
+        }
+      };
+    }
+
+    $('btnImportCookie').onclick = async () => {
+      try {
+        const r = await api('/api/account/import-cookie', {
+          method: 'POST',
+          body: JSON.stringify({
+            cookie: $('cookieInput').value,
+            name: $('accName').value,
+            email: $('accEmail').value,
+          }),
+        });
+        toast(r.ok ? '导入成功 ' + r.account_id : '导入但探测失败: ' + r.detail);
+        loadAccounts();
+      } catch (e) { toast(e.message); }
+    };
+    $('btnRenewAll').onclick = async () => {
+      try {
+        const r = await api('/api/accounts/renew-all', { method: 'POST', body: '{}' });
+        toast('保活完成');
+        $('regLog').textContent = JSON.stringify(r, null, 2);
+        loadAccounts();
+      } catch (e) { toast(e.message); }
+    };
+    $('btnRefreshAcc').onclick = () => loadAccounts();
+
+    $('btnPrepMail').onclick = async () => {
+      try {
+        const r = await api('/api/account/prepare-mailbox', { method: 'POST', body: '{}' });
+        $('regLog').textContent = JSON.stringify(r, null, 2);
+        toast('邮箱已创建: ' + r.email);
+      } catch (e) { toast(e.message); }
+    };
+    $('btnAutoReg').onclick = async () => {
+      try {
+        const r = await api('/api/account/auto-register', { method: 'POST', body: '{}' });
+        $('regLog').textContent = JSON.stringify(r, null, 2);
+        loadAccounts();
+      } catch (e) { toast(e.message); }
+    };
+    $('btnBatchReg').onclick = async () => {
+      try {
+        const r = await api('/api/account/auto-register-batch', {
+          method: 'POST',
+          body: JSON.stringify({ success_target: 3, max_attempts: 5 }),
+        });
+        $('regLog').textContent = JSON.stringify(r, null, 2);
+        toast('批量任务: ' + r.job_id);
+        pollJob(r.job_id);
+      } catch (e) { toast(e.message); }
+    };
+    async function pollJob(id) {
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const r = await api('/api/account/auto-register-batch/' + id);
+        $('regLog').textContent = JSON.stringify(r.job, null, 2);
+        if (r.job.status === 'done' || r.job.status === 'error') {
+          loadAccounts();
+          break;
+        }
+      }
+    }
+    $('btnBind').onclick = async () => {
+      try {
+        const r = await api('/api/account/' + $('bindId').value + '/bind-cookie', {
+          method: 'POST',
+          body: JSON.stringify({ cookie: $('bindCookie').value }),
+        });
+        toast(r.ok ? '绑定成功' : '绑定后探测失败: ' + r.detail);
+        loadAccounts();
+      } catch (e) { toast(e.message); }
+    };
+
+    async function loadConfig() {
+      const c = await api('/api/config');
+      $('cfgKeys').value = c.api_keys || '';
+      $('cfgAdmin').value = c.admin_password || '';
+      $('cfgMode').value = c.default_mode || 'oversea';
+      $('cfgKeepalive').value = c.keepalive_interval_seconds || 21600;
+      const tm = c.temp_mail || {};
+      $('tmBase').value = tm.api_base || '';
+      $('tmAdmin').value = tm.admin_password || '';
+      $('tmDomain').value = tm.domain || '';
+      $('tmSite').value = tm.site_password || '';
+      const px = c.proxy_pool || {};
+      $('pxEnabled').value = String(!!px.enabled);
+      $('pxPort').value = px.listen_port || 17890;
+      $('pxSub').value = px.sub_url || '';
+      $('pxBin').value = px.singbox_path || '';
+      $('pxLog').textContent = JSON.stringify(px.status || px, null, 2);
+    }
+
+    $('btnCfgSave').onclick = async () => {
+      await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          api_keys: $('cfgKeys').value,
+          admin_password: $('cfgAdmin').value,
+          default_mode: $('cfgMode').value,
+          keepalive_interval_seconds: Number($('cfgKeepalive').value),
+        }),
+      });
+      toast('设置已保存');
+    };
+    $('btnTmSave').onclick = async () => {
+      await api('/api/temp-mail/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          api_base: $('tmBase').value,
+          admin_password: $('tmAdmin').value,
+          domain: $('tmDomain').value,
+          site_password: $('tmSite').value,
+        }),
+      });
+      toast('临时邮箱配置已保存');
+    };
+    $('btnTmTest').onclick = async () => {
+      const r = await api('/api/temp-mail/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          api_base: $('tmBase').value,
+          admin_password: $('tmAdmin').value,
+          domain: $('tmDomain').value,
+          site_password: $('tmSite').value,
+        }),
+      });
+      $('tmLog').textContent = JSON.stringify(r, null, 2);
+      toast(r.ok ? '连接成功' : r.error);
+    };
+
+    $('btnPxSave').onclick = async () => {
+      await api('/api/proxy/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          enabled: $('pxEnabled').value === 'true',
+          listen_port: Number($('pxPort').value),
+          sub_url: $('pxSub').value,
+          singbox_path: $('pxBin').value,
+        }),
+      });
+      toast('代理配置已保存');
+    };
+    $('btnPxStart').onclick = async () => {
+      try {
+        const r = await api('/api/proxy/start', { method: 'POST', body: '{}' });
+        $('pxLog').textContent = JSON.stringify(r, null, 2);
+        toast('代理已启动');
+      } catch (e) { toast(e.message); }
+    };
+    $('btnPxStop').onclick = async () => {
+      const r = await api('/api/proxy/stop', { method: 'POST', body: '{}' });
+      $('pxLog').textContent = JSON.stringify(r, null, 2);
+    };
+    $('btnPxRotate').onclick = async () => {
+      try {
+        const r = await api('/api/proxy/rotate', { method: 'POST', body: '{}' });
+        $('pxLog').textContent = JSON.stringify(r, null, 2);
+      } catch (e) { toast(e.message); }
+    };
+    $('btnPxTest').onclick = async () => {
+      const r = await api('/api/proxy/test', { method: 'POST', body: '{}' });
+      $('pxLog').textContent = JSON.stringify(r, null, 2);
+    };
+
+    $('btnLogs').onclick = async () => {
+      const u = await api('/api/usage');
+      const l = await api('/api/logs?limit=50');
+      $('usageLog').textContent = JSON.stringify(u.usage, null, 2);
+      $('reqLog').textContent = JSON.stringify(l.logs, null, 2);
+    };
+
+    async function callOpenAI(path) {
+      const key = $('testKey').value;
+      const body = path.includes('responses')
+        ? { model: $('testModel').value, input: $('testMsg').value, stream: false }
+        : {
+            model: $('testModel').value,
+            messages: [{ role: 'user', content: $('testMsg').value }],
+            stream: false,
+          };
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + key,
+        },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      $('testLog').textContent = text;
+    }
+    $('btnTestChat').onclick = () => callOpenAI('/v1/chat/completions').catch((e) => toast(e.message));
+    $('btnTestResp').onclick = () => callOpenAI('/v1/responses').catch((e) => toast(e.message));
+
+    async function refreshAll() {
+      try {
+        const h = await fetch('/health').then((r) => r.json());
+        $('healthInfo').textContent = `mode=${h.mode} · ok`;
+      } catch { $('healthInfo').textContent = 'health fail'; }
+      await loadConfig();
+      await loadAccounts();
+    }
+
+    function esc(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>
