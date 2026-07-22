@@ -111,9 +111,23 @@ curl http://localhost:8080/v1/responses \
 
 ---
 
+## 协议说明（对话 / 保活 / 思考联网）
+
+详见 **[docs/LONGCAT_PROTOCOL.md](docs/LONGCAT_PROTOCOL.md)**：
+
+| 主题 | 要点 |
+|------|------|
+| 海外注册 | `passport.mykeeta.com` 邮箱 OTP（非 meituan 国内手机） |
+| 免登对话 | `POST /api/v1/chat-completion-oversea-V2` |
+| 登录对话 | `session-create` + `chat-completion-V2` + Cookie |
+| 思考 / 联网 | 请求体 `reasonEnabled` / `searchEnabled`（0/1，无多档 effort） |
+| 保活 | 周期 `session-create` 探测 Cookie |
+
+模型别名：`longcat-thinking`（思考）、`longcat-search`（联网）、`longcat-reason-search`（两者）。
+
 ## 账号与保活
 
-1. 浏览器登录 [longcat.chat](https://longcat.chat)
+1. **海外**：邮箱在 [passport.mykeeta.com](https://passport.mykeeta.com) 注册后回到 longcat.chat；或直接登录 longcat 选择海外邮箱
 2. DevTools → Application → Cookie，复制整段，或至少 `passport_token_key`
 3. 管理面板 **账号 → 导入 Cookie**，或：
 

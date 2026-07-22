@@ -35,10 +35,40 @@ import {
 } from '../services/proxyPool.js';
 import { probeAccount } from '../services/longcatClient.js';
 import { renewAll, renewOneAccount } from '../services/keepalive.js';
+import { summarizeFlow, buildLoginPageUrl, MYKEETA } from '../services/mykeetaClient.js';
 
 const router = Router();
 
 router.use(requireAdmin);
+
+// ─── protocol cheat-sheet (oversea email → chat → keepalive) ─
+
+router.get('/api/protocol/summary', (_req, res) => {
+  res.json({
+    ok: true,
+    oversea_passport: MYKEETA.origin,
+    mykeeta_login_url: buildLoginPageUrl(),
+    flow: summarizeFlow(),
+    chat: {
+      oversea: {
+        url: 'https://longcat.chat/api/v1/chat-completion-oversea-V2',
+        cookie: false,
+      },
+      logged_in: {
+        session: 'https://longcat.chat/api/v1/session-create',
+        chat: 'https://longcat.chat/api/v1/chat-completion-V2',
+        cookie: 'passport_token_key required',
+      },
+      flags: {
+        reasonEnabled: '0|1 (thinking on/off, no multi-level effort)',
+        searchEnabled: '0|1 (web search on/off)',
+        agentId: '1 default, 2 pro-like',
+      },
+    },
+    keepalive: 'POST /api/v1/session-create with account Cookie',
+    doc: 'docs/LONGCAT_PROTOCOL.md',
+  });
+});
 
 // ─── system ─────────────────────────────────────────────────
 

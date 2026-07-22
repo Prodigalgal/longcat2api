@@ -1,13 +1,15 @@
 /**
- * LongCat 注册机
+ * LongCat 注册机（仅海外）
  *
- * 美团 Passport 网页注册强依赖风控/Yoda，完整无头自动化不稳定。
+ * 海外邮箱：passport.mykeeta.com（不是国内 passport.meituan.com）
+ * 完整协议见 docs/LONGCAT_PROTOCOL.md + services/mykeetaClient.js
+ *
  * 本模块提供：
- * 1) 临时邮箱创建 + 代理获取（注册前置）
- * 2) Cookie / passport_token 导入入库（主路径）
+ * 1) 临时邮箱 + 海外代理（注册前置，出口必须非 CN）
+ * 2) Cookie / passport_token 导入入库（登录态对话主路径）
  * 3) 批量导入 Cookie
- * 4) 半自动注册任务：创建邮箱 → 日志指引 → 等待手动粘贴 Cookie 绑定
- * 5) 连通性探测后标记 is_valid
+ * 4) 半自动：创建邮箱 → 返回 mykeeta 登录 URL → 人工/后续自动 OTP 后绑 Cookie
+ * 5) 连通性探测后标记 is_valid（session-create 保活）
  */
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
@@ -27,6 +29,7 @@ import {
   proxyStatus,
 } from './proxyPool.js';
 import { probeAccount } from './longcatClient.js';
+import { buildLoginPageUrl, summarizeFlow } from './mykeetaClient.js';
 
 export function parseCookieString(raw) {
   const s = String(raw || '').trim();
@@ -122,12 +125,18 @@ export async function prepareRegisterMailbox() {
     }
   }
   const addr = await createAddress(tm);
+  const mykeetaLoginUrl = buildLoginPageUrl();
   return {
     email: addr.address,
     mail_jwt: addr.jwt,
     proxy_url: proxy,
+    region: 'oversea',
+    passport: 'https://passport.mykeeta.com',
+    mykeeta_login_url: mykeetaLoginUrl,
+    flow: summarizeFlow(),
     tip:
-      '请使用该邮箱在 https://longcat.chat 完成美团 Passport 注册/登录，然后把浏览器 Cookie（含 passport_token_key）导入本系统。',
+      '仅海外：用该邮箱打开 mykeeta_login_url 完成邮箱 OTP 注册/登录（勿走 passport.meituan.com）。' +
+      '成功后把 longcat.chat 的 Cookie（含 passport_token_key）导入。注册出口请走海外代理。',
   };
 }
 
@@ -143,14 +152,15 @@ export async function runOneRegisterAttempt({ jobId } = {}) {
     if (jobId) appendRegisterLog(jobId, msg);
   };
 
-  log('创建临时邮箱...');
+  log('创建临时邮箱（海外 mykeeta 邮箱注册前置）...');
   const prepared = await prepareRegisterMailbox();
   log(`邮箱: ${prepared.email}`);
   if (prepared.proxy_url) log(`代理: ${prepared.proxy_url}`);
+  log(`Passport: ${prepared.passport}`);
+  log(`Login URL: ${prepared.mykeeta_login_url}`);
   log(prepared.tip);
 
-  // Placeholder for future passport automation hooks.
-  // Persist a draft account without cookie so UI can bind later.
+  // Draft account for cookie bind after mykeeta email OTP (auto or manual).
   const draft = {
     id: randomUUID().replace(/-/g, '').slice(0, 16),
     name: prepared.email,
@@ -159,7 +169,8 @@ export async function runOneRegisterAttempt({ jobId } = {}) {
     cookie: '',
     passport_token: '',
     mail_jwt: prepared.mail_jwt,
-    note: 'awaiting_cookie_bind',
+    region: 'oversea',
+    note: 'awaiting_mykeeta_cookie_bind',
     enabled: false,
     auto_renew: true,
     is_valid: false,
@@ -174,8 +185,12 @@ export async function runOneRegisterAttempt({ jobId } = {}) {
     email: prepared.email,
     password: draft.password,
     mail_jwt: prepared.mail_jwt,
+    mykeeta_login_url: prepared.mykeeta_login_url,
+    proxy_url: prepared.proxy_url,
+    flow: prepared.flow,
     message:
-      '美团 Passport 需浏览器完成注册。请用返回的邮箱注册后，调用导入 Cookie 接口绑定到 account_id。',
+      '请用海外 IP + 该邮箱在 passport.mykeeta.com 完成邮箱验证码注册/登录，' +
+      '再把 longcat.chat Cookie 绑定到 account_id。协议细节见 docs/LONGCAT_PROTOCOL.md',
   };
 }
 

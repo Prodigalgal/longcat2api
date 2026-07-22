@@ -124,8 +124,14 @@
     </section>
 
     <section id="tab-register" class="panel">
-      <h2>注册机</h2>
-      <p class="muted">创建 CF 临时邮箱 +（可选）代理。美团 Passport 需在浏览器完成注册，随后将 Cookie 绑定到 draft 账号。</p>
+      <h2>注册机（仅海外 mykeeta 邮箱）</h2>
+      <p class="muted">
+        临时邮箱 + <b>海外代理</b>。登录页是
+        <code>passport.mykeeta.com</code>（邮箱 OTP），不是国内 meituan 手机号。
+        完成后把 <code>longcat.chat</code> Cookie 绑定到 draft。对话/思考/联网见
+        <code>docs/LONGCAT_PROTOCOL.md</code>：
+        <code>reasonEnabled</code>/<code>searchEnabled</code> 为 0/1 开关。
+      </p>
       <div class="actions">
         <button class="btn" id="btnPrepMail">准备邮箱（单次）</button>
         <button class="btn" id="btnAutoReg">单次注册任务</button>
