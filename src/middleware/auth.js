@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { createHash } from 'node:crypto';
 
 export function extractBearer(req) {
   const h = req.headers.authorization || req.headers['x-api-key'] || '';
@@ -18,6 +19,7 @@ export function requireApiKey(req, res, next) {
       },
     });
   }
+  req.apiKeyId = createHash('sha256').update(key).digest('hex').slice(0, 16);
   next();
 }
 

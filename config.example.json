@@ -2,16 +2,17 @@
   "api_keys": "sk-longcat",
   "admin_password": "admin",
   "default_mode": "session",
+  "keepalive_interval_seconds": 21600,
   "temp_mail": {
     "api_base": "https://apimail.example.com",
     "admin_password": "YOUR_ADMIN_PASSWORD",
     "domain": "",
     "site_password": "",
-    "batch_count": 5,
-    "success_target": 3,
-    "concurrent": 2,
+    "batch_count": 3,
+    "success_target": 1,
+    "concurrent": 1,
     "concurrent_interval": 3.0,
-    "otp_timeout": 120
+    "otp_timeout": 240
   },
   "proxy_pool": {
     "enabled": false,
@@ -25,10 +26,18 @@
   },
   "captcha_ai": {
     "enabled": false,
-    "api_base": "https://sub2api.example.com",
+    "api_base": "https://grok2api-direct.example.com",
     "api_key": "sk-xxx",
-    "model": "grok",
+    "model": "grok-4.5",
     "timeout": 90,
-    "_comment": "AI vision captcha is LAST RESORT only after wait/retry fail"
+    "_comment": "AI vision captcha is LAST RESORT only after local ddddocr/opencv solvers fail"
+  },
+  "session": {
+    "sticky": true,
+    "max_concurrency_per_account": 1,
+    "queue_limit": 200,
+    "queue_timeout_ms": 120000,
+    "compact_threshold_tokens": 80000,
+    "ttl_seconds": 259200
   }
 }

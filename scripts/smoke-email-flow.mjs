@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium } from 'patchright';
 
 const url =
   'https://passport.mykeeta.com/pc/login?locale=en&region=HK&joinkey=1101498_851697727&token_id=5oTEq210UBLUcm4tcuuy6A&service=consumer&risk_cost_id=119801&theme=longcat&cityId=810001&backurl=https%3A%2F%2Flongcat.chat%2Fapi%2Fv1%2Fuser-loginV3%3Furl%3Dhttps%253A%252F%252Flongcat.chat%252F';

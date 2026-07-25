@@ -1,20 +1,34 @@
-# Multi-stage: Node app + Playwright Chromium + sing-box
+# Multi-stage: Node app + Camoufox + Patchright Chromium + sing-box
 # linux/amd64 + linux/arm64 (Oracle A1)
+# Stock Playwright is NOT used.
 
 FROM node:20-bookworm AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ ca-certificates curl unzip \
+    python3 python3-pip python3-venv make g++ ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV LONGCAT2API_SKIP_BROWSER_DOWNLOAD=1 \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm install --omit=dev
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
-# Install chromium + OS deps into /ms-playwright (explicit path)
+COPY requirements-captcha.txt ./
+RUN python3 -m venv /opt/captcha-venv \
+  && /opt/captcha-venv/bin/pip install --no-cache-dir -r requirements-captcha.txt
+ENV LONGCAT2API_SKIP_BROWSER_DOWNLOAD=0 \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
+
+# Camoufox binary cache
+ENV CAMOUFOX_INSTALL_DIR=/opt/camoufox \
+    HOME=/tmp
+RUN mkdir -p /opt/camoufox \
+  && npx camoufox-js fetch \
+  && chmod -R a+rX /opt/camoufox || true
+
+# Patchright Chromium fallback
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN mkdir -p /ms-playwright \
-  && npx playwright install --with-deps chromium \
-  && chmod -R a+rX /ms-playwright
+  && npx patchright install --with-deps chromium \
+  && chmod -R a+rX /ms-playwright || true
 
 ARG SING_BOX_VERSION=1.11.7
 RUN set -eux; \
@@ -35,6 +49,7 @@ RUN set -eux; \
 FROM node:20-bookworm AS runtime
 WORKDIR /app
 
+# Camoufox (Firefox) + Patchright Chromium runtime libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     fonts-liberation \
@@ -56,19 +71,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libpango-1.0-0 \
     libcairo2 \
+    libgtk-3-0 \
+    libdbus-glib-1-2 \
+    libgomp1 \
+    libxt6 \
+    python3 \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /var/lib/longcat2api /tmp /opt/sing-box /ms-playwright \
+    && mkdir -p /var/lib/longcat2api /tmp /opt/sing-box /ms-playwright /opt/camoufox \
     && chown -R node:node /var/lib/longcat2api /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /ms-playwright /ms-playwright
+COPY --from=deps /opt/camoufox /opt/camoufox
 COPY --from=deps /opt/sing-box/sing-box /opt/sing-box/sing-box
-RUN chmod -R a+rX /ms-playwright \
+COPY --from=deps /opt/captcha-venv /opt/captcha-venv
+RUN chmod -R a+rX /ms-playwright /opt/camoufox \
   && chmod 755 /opt/sing-box/sing-box \
-  && chown -R node:node /ms-playwright
+  && chown -R node:node /ms-playwright /opt/camoufox
 
 COPY package.json ./
+COPY scripts ./scripts
 COPY src ./src
 COPY public ./public
 COPY config.example.json ./config.example.json
@@ -85,9 +108,13 @@ ENV NODE_ENV=production \
     TMPDIR=/tmp \
     TEMP=/tmp \
     TMP=/tmp \
+    CAMOUFOX_INSTALL_DIR=/opt/camoufox \
+    LONGCAT2API_PYTHON=/opt/captcha-venv/bin/python \
+    MOZ_DISABLE_CONTENT_SANDBOX=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    PLAYWRIGHT_ARTIFACTS_DIR=/tmp/playwright-artifacts \
+    LONGCAT2API_BROWSER_ENGINE=camoufox \
     LONGCAT2API_REGISTER_HEADLESS=1 \
+    LONGCAT2API_REGISTER_MAX_ATTEMPTS=3 \
     LONGCAT2API_PROXY_SINGBOX_PATH=/opt/sing-box/sing-box
 
 USER node

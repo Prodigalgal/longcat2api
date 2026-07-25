@@ -26,6 +26,35 @@ function msgId() {
   return Math.floor(1e7 + Math.random() * 9e7);
 }
 
+let sessionCreateGate = Promise.resolve();
+let nextSessionCreateAt = 0;
+
+async function takeSessionCreateSlot() {
+  let release;
+  const previous = sessionCreateGate;
+  sessionCreateGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    const minInterval = Math.max(
+      0,
+      Number(process.env.LONGCAT2API_SESSION_CREATE_INTERVAL_MS || 500)
+    );
+    const waitMs = Math.max(0, nextSessionCreateAt - Date.now());
+    if (waitMs) await sleep(waitMs);
+    nextSessionCreateAt = Date.now() + minInterval;
+  } finally {
+    release();
+  }
+}
+
+export function isSessionRateLimit(value) {
+  return /HTTP\s*429|too\s*(?:fast|many)|rate\s*limit|frequency|操作太快|请求过于频繁|稍后再试/i.test(
+    String(value || '')
+  );
+}
+
 export function buildOverseaPayload({ content, agentId = '1', reasonEnabled = 0, searchEnabled = 0 }) {
   const u = msgId();
   const a = msgId();
@@ -105,24 +134,42 @@ async function rawFetch(url, { method = 'POST', headers, body, proxyUrl, timeout
  */
 export async function createSession(account, { agentId = '1', proxyUrl } = {}) {
   const cookie = accountCookieHeader(account);
-  const res = await rawFetch(LONGCAT.sessionCreate, {
-    method: 'POST',
-    headers: buildHeaders(cookie),
-    body: { model: '', agentId: String(agentId) },
-    proxyUrl,
-    timeout: 60000,
-  });
-  const text = await res.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`session-create invalid JSON HTTP ${res.status}: ${text.slice(0, 120)}`);
+  const attempts = Math.max(
+    1,
+    Math.min(6, Number(process.env.LONGCAT2API_SESSION_CREATE_ATTEMPTS || 4))
+  );
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    await takeSessionCreateSlot();
+    const res = await rawFetch(LONGCAT.sessionCreate, {
+      method: 'POST',
+      headers: buildHeaders(cookie),
+      body: { model: '', agentId: String(agentId) },
+      proxyUrl,
+      timeout: 60000,
+    });
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`session-create invalid JSON HTTP ${res.status}: ${text.slice(0, 120)}`);
+    }
+    if (data.code === 0) return data.data || {};
+
+    lastError = new Error(`session-create failed: ${data.message || JSON.stringify(data)}`);
+    if (res.status !== 429 && !isSessionRateLimit(lastError.message)) throw lastError;
+    if (attempt < attempts) {
+      const base = Math.max(
+        250,
+        Number(process.env.LONGCAT2API_SESSION_CREATE_BACKOFF_MS || 1000)
+      );
+      await sleep(base * 2 ** (attempt - 1) + Math.floor(Math.random() * 350));
+    }
   }
-  if (data.code !== 0) {
-    throw new Error(`session-create failed: ${data.message || JSON.stringify(data)}`);
-  }
-  return data.data || {};
+  lastError.status = 429;
+  lastError.code = 'upstream_rate_limit';
+  throw lastError;
 }
 
 /**
@@ -154,8 +201,11 @@ export async function probeAccount(account, { proxyUrl } = {}) {
       }
       try {
         const j = JSON.parse(text);
-        if (j.code === 0 || j.data) {
+        if (isAuthenticatedUserCurrent(j)) {
           return { ok: true, detail: 'user-current ok' };
+        }
+        if (j.code === 0 && j.data?.loginStatus === 0) {
+          return { ok: false, detail: 'auth failed: user-current loginStatus=0' };
         }
         return { ok: false, detail: j.message || text.slice(0, 100) };
       } catch {
@@ -171,39 +221,23 @@ export async function probeAccount(account, { proxyUrl } = {}) {
   return { ok: false, detail: 'unknown' };
 }
 
-/**
- * Chat completion (collect full body).
- * Session-only: requires logged-in account Cookie (no guest oversea).
- */
-export async function chatCollect({
-  account = null,
-  content,
-  agentId = '1',
-  reasonEnabled = false,
-  searchEnabled = false,
-  useProxy = false,
+export function isAuthenticatedUserCurrent(payload) {
+  if (!payload || payload.code !== 0 || !payload.data) return false;
+  const data = payload.data;
+  return (
+    data.loginStatus === 1 ||
+    data.loginStatus === true ||
+    !!(data.userId || data.uid || data.email || data.phone || data.token)
+  );
+}
+
+async function postChatCompletion({
+  cookie,
+  payload,
+  proxyUrl,
+  reasonEnabled,
 }) {
-  const proxyUrl = useProxy ? getProxyUrl() : null;
-  const cookie = account ? accountCookieHeader(account) : '';
-
-  if (!cookie) {
-    throw Object.assign(
-      new Error('session mode requires account cookie (passport_token_key)'),
-      { status: 503 }
-    );
-  }
-  const session = await createSession(account, { agentId, proxyUrl });
-  const conversationId = session.conversationId;
-  if (!conversationId) throw new Error('No conversationId from session-create');
   const url = LONGCAT.cnV2;
-  const payload = buildCnPayload({
-    content,
-    conversationId,
-    agentId,
-    reasonEnabled,
-    searchEnabled,
-  });
-
   const maxRateRetries = 3;
   let lastErr = '';
   for (let attempt = 0; attempt <= maxRateRetries; attempt++) {
@@ -222,8 +256,6 @@ export async function chatCollect({
     }
 
     const bodyText = await res.text();
-
-    // rate limit in body
     const trimmed = bodyText.trim();
     if (trimmed.startsWith('{')) {
       try {
@@ -279,6 +311,83 @@ export async function chatCollect({
   const err = new Error(lastErr || 'chat failed');
   err.status = 502;
   throw err;
+}
+
+/**
+ * Chat with an existing conversationId (sticky session reuse).
+ */
+export async function chatCollectWithConversation({
+  account = null,
+  content,
+  conversationId,
+  agentId = '1',
+  reasonEnabled = false,
+  searchEnabled = false,
+  useProxy = false,
+}) {
+  const proxyUrl = useProxy ? getProxyUrl() : null;
+  const cookie = account ? accountCookieHeader(account) : '';
+  if (!cookie) {
+    throw Object.assign(
+      new Error('session mode requires account cookie (passport_token_key)'),
+      { status: 503 }
+    );
+  }
+  if (!conversationId) throw new Error('conversationId required');
+  const payload = buildCnPayload({
+    content,
+    conversationId,
+    agentId,
+    reasonEnabled,
+    searchEnabled,
+  });
+  const collected = await postChatCompletion({
+    cookie,
+    payload,
+    proxyUrl,
+    reasonEnabled,
+  });
+  return { ...collected, conversationId };
+}
+
+/**
+ * Chat completion (collect full body).
+ * Session-only: requires logged-in account Cookie (no guest oversea).
+ */
+export async function chatCollect({
+  account = null,
+  content,
+  agentId = '1',
+  reasonEnabled = false,
+  searchEnabled = false,
+  useProxy = false,
+}) {
+  const proxyUrl = useProxy ? getProxyUrl() : null;
+  const cookie = account ? accountCookieHeader(account) : '';
+
+  if (!cookie) {
+    throw Object.assign(
+      new Error('session mode requires account cookie (passport_token_key)'),
+      { status: 503 }
+    );
+  }
+  const session = await createSession(account, { agentId, proxyUrl });
+  const conversationId = session.conversationId;
+  if (!conversationId) throw new Error('No conversationId from session-create');
+  const payload = buildCnPayload({
+    content,
+    conversationId,
+    agentId,
+    reasonEnabled,
+    searchEnabled,
+  });
+  const collected = await postChatCompletion({
+    cookie,
+    payload,
+    proxyUrl,
+    reasonEnabled,
+  });
+  return { ...collected, conversationId };
 }
 
 /**

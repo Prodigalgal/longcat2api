@@ -86,6 +86,12 @@ export function getDb() {
   return db;
 }
 
+export function closeDb() {
+  if (!db) return;
+  db.close();
+  db = null;
+}
+
 // ─── accounts ───────────────────────────────────────────────
 
 export function listAccounts({ includeSecrets = false } = {}) {
@@ -168,25 +174,59 @@ export function deleteAccount(id) {
   return getDb().prepare('DELETE FROM accounts WHERE id = ?').run(id);
 }
 
-export function pickAccountRoundRobin() {
-  const rows = getDb()
+export function listValidAccounts() {
+  return getDb()
     .prepare(
       `SELECT * FROM accounts
        WHERE enabled = 1 AND is_valid = 1 AND (cookie != '' OR passport_token != '')
-       ORDER BY COALESCE(last_used_at, 0) ASC, error_count ASC
-       LIMIT 1`
+       ORDER BY COALESCE(last_used_at, 0) ASC, error_count ASC`
     )
     .all();
+}
+
+export function pickAccountRoundRobin() {
+  const rows = listValidAccounts();
   if (!rows.length) return null;
   const acc = rows[0];
   updateAccount(acc.id, { last_used_at: Date.now() });
   return getAccount(acc.id);
 }
 
+export function markAccountUsed(id) {
+  if (!id) return;
+  updateAccount(id, { last_used_at: Date.now() });
+}
+
+export function accountPoolStats() {
+  const row = getDb()
+    .prepare(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) AS enabled,
+         SUM(CASE WHEN enabled=1 AND is_valid=1 AND (cookie!='' OR passport_token!='') THEN 1 ELSE 0 END) AS valid,
+         SUM(CASE WHEN enabled=1 AND auto_renew=1 THEN 1 ELSE 0 END) AS keepalive,
+         SUM(CASE WHEN renew_error!='' THEN 1 ELSE 0 END) AS renew_errors
+       FROM accounts`
+    )
+    .get();
+  return {
+    total: row?.total || 0,
+    enabled: row?.enabled || 0,
+    valid: row?.valid || 0,
+    keepalive: row?.keepalive || 0,
+    renew_errors: row?.renew_errors || 0,
+  };
+}
+
 export function listKeepaliveAccounts() {
   return getDb()
     .prepare(
-      `SELECT * FROM accounts WHERE enabled = 1 AND auto_renew = 1 AND (cookie != '' OR passport_token != '')`
+      `SELECT * FROM accounts
+       WHERE enabled = 1 AND auto_renew = 1
+         AND (
+           cookie != '' OR passport_token != '' OR
+           (email != '' AND (password != '' OR mail_jwt != ''))
+         )`
     )
     .all();
 }

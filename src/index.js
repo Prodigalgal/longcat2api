@@ -3,31 +3,33 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { config, paths } from './config.js';
-import { initDb } from './db/index.js';
+import { closeDb, initDb } from './db/index.js';
 import openaiRoutes from './routes/openai.js';
 import adminRoutes from './routes/admin.js';
 import { requireAdmin } from './middleware/auth.js';
 import { startKeepaliveLoop, stopKeepaliveLoop } from './services/keepalive.js';
 import { reclaimProxy } from './services/proxyPool.js';
+import { accountCoordinator } from './services/accountCoordinator.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
 
-// init — force writable tmp for Playwright under K8s readOnlyRootFilesystem
+// init — force writable tmp under K8s readOnlyRootFilesystem
 // (emptyDir is mounted at /tmp; never nest under missing /tmp/longcat2api)
 process.env.TMPDIR = process.env.TMPDIR || '/tmp';
 process.env.TEMP = process.env.TEMP || '/tmp';
 process.env.TMP = process.env.TMP || '/tmp';
 process.env.HOME = process.env.HOME || '/tmp';
-process.env.PLAYWRIGHT_ARTIFACTS_DIR =
-  process.env.PLAYWRIGHT_ARTIFACTS_DIR || '/tmp/playwright-artifacts';
+// Camoufox + Patchright paths (no stock Playwright)
+process.env.CAMOUFOX_INSTALL_DIR =
+  process.env.CAMOUFOX_INSTALL_DIR || path.join(process.env.HOME || '/tmp', '.cache', 'camoufox');
 process.env.PLAYWRIGHT_BROWSERS_PATH =
   process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
 
 for (const d of [
   paths.data,
   process.env.TMPDIR,
-  process.env.PLAYWRIGHT_ARTIFACTS_DIR,
+  process.env.CAMOUFOX_INSTALL_DIR,
   path.join(process.env.HOME || '/tmp', '.cache'),
 ]) {
   try {
@@ -41,14 +43,14 @@ config.load();
 
 // Register readiness (logged once)
 try {
+  const cam = process.env.CAMOUFOX_INSTALL_DIR;
   const pw = process.env.PLAYWRIGHT_BROWSERS_PATH;
-  const hasPw = pw && fs.existsSync(pw);
   const sb =
     process.env.LONGCAT2API_PROXY_SINGBOX_PATH ||
     process.env.SING_BOX_PATH ||
     '/opt/sing-box/sing-box';
   console.log(
-    `[startup] register: browsersPath=${pw} exists=${!!hasPw} singbox=${sb} exists=${fs.existsSync(sb)} tmp=${process.env.TMPDIR}`
+    `[startup] register: engine=${process.env.LONGCAT2API_BROWSER_ENGINE || 'camoufox'} camoufox=${cam} exists=${fs.existsSync(cam || '')} patchright_path=${pw} exists=${!!(pw && fs.existsSync(pw))} singbox=${sb} exists=${fs.existsSync(sb)} tmp=${process.env.TMPDIR}`
   );
 } catch {
   /* ignore */
@@ -59,8 +61,9 @@ app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
   const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
+  const camoufoxDir = process.env.CAMOUFOX_INSTALL_DIR || '';
   const singbox =
     process.env.LONGCAT2API_PROXY_SINGBOX_PATH ||
     process.env.SING_BOX_PATH ||
@@ -87,16 +90,27 @@ app.get('/health', (_req, res) => {
   } catch {
     /* ignore */
   }
+  let browserMeta = null;
+  try {
+    const { browserStatus } = await import('./services/browser.js');
+    browserMeta = await browserStatus();
+  } catch (e) {
+    browserMeta = { error: e.message };
+  }
   res.json({
     status: 'ok',
     service: 'longcat2api',
-    version: '1.0.1',
+    version: '1.0.2',
     mode: config.getDefaultMode(),
     runtime: 'nodejs',
     sqlite: paths.sqlite,
     register: {
-      playwright_browsers_path: browsersPath,
+      browser_engine: process.env.LONGCAT2API_BROWSER_ENGINE || 'camoufox',
+      camoufox_install_dir: camoufoxDir,
+      camoufox_exists: !!(camoufoxDir && fs.existsSync(camoufoxDir)),
+      patchright_browsers_path: browsersPath,
       chromium_detected: chromiumOk,
+      backends: browserMeta,
       singbox_path: singbox,
       singbox_exists: fs.existsSync(singbox),
       tmpdir: process.env.TMPDIR || '/tmp',
@@ -152,12 +166,16 @@ const server = app.listen(PORT, HOST, () => {
 function shutdown() {
   console.log('\n[shutdown] ...');
   stopKeepaliveLoop();
+  accountCoordinator.close();
   try {
     reclaimProxy();
   } catch {
     /* ignore */
   }
-  server.close(() => process.exit(0));
+  server.close(() => {
+    closeDb();
+    process.exit(0);
+  });
   setTimeout(() => process.exit(0), 3000).unref();
 }
 

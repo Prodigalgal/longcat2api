@@ -1,84 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { resolveModel } from './models.js';
+import {
+  extractTextContent,
+  buildPromptFromMessages,
+  buildPromptFromResponsesInput,
+} from './content.js';
+import { normalizeTools } from './tooling.js';
 
-export function extractTextContent(content) {
-  if (content == null) return '';
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part?.type === 'text') return part.text || '';
-        if (part?.type === 'input_text') return part.text || '';
-        if (part?.text) return part.text;
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  if (typeof content === 'object' && content.text) return String(content.text);
-  return String(content);
-}
-
-/**
- * Flatten OpenAI messages → single prompt string for LongCat web
- */
-export function buildPromptFromMessages(messages = []) {
-  const parts = [];
-  for (const msg of messages) {
-    const role = msg.role || 'user';
-    let content = extractTextContent(msg.content);
-    if (msg.tool_calls?.length) {
-      content +=
-        (content ? '\n' : '') +
-        msg.tool_calls
-          .map((tc) => {
-            const fn = tc.function || {};
-            return `[tool_call ${fn.name}] ${fn.arguments || ''}`;
-          })
-          .join('\n');
-    }
-    if (!content && role !== 'tool') continue;
-    if (role === 'system') parts.push(`[System]\n${content}`);
-    else if (role === 'user') parts.push(`[User]\n${content}`);
-    else if (role === 'assistant') parts.push(`[Assistant]\n${content}`);
-    else if (role === 'tool') parts.push(`[Tool Result: ${msg.name || 'tool'}]\n${content}`);
-    else parts.push(`[${role}]\n${content}`);
-  }
-  return parts.join('\n\n').trim();
-}
-
-/**
- * OpenAI Responses API input → messages-like prompt
- */
-export function buildPromptFromResponsesInput(body) {
-  if (typeof body.input === 'string') return body.input;
-  if (Array.isArray(body.input)) {
-    // items: {role, content} or content parts
-    const msgs = [];
-    for (const item of body.input) {
-      if (typeof item === 'string') {
-        msgs.push({ role: 'user', content: item });
-        continue;
-      }
-      if (item.role) {
-        msgs.push({ role: item.role, content: item.content });
-        continue;
-      }
-      if (item.type === 'message') {
-        msgs.push({ role: item.role || 'user', content: item.content });
-      }
-    }
-    if (body.instructions) {
-      msgs.unshift({ role: 'system', content: body.instructions });
-    }
-    return buildPromptFromMessages(msgs);
-  }
-  if (body.instructions) return String(body.instructions);
-  return '';
-}
+export { extractTextContent, buildPromptFromMessages, buildPromptFromResponsesInput };
 
 export function normalizeChatRequest(body, _defaultMode = 'session') {
+  if (body.n != null && Number(body.n) !== 1) {
+    const error = new Error('this gateway supports n=1 only');
+    error.status = 400;
+    error.code = 'unsupported_n';
+    throw error;
+  }
   const modelMeta = resolveModel(body.model);
   let reason = modelMeta.reason;
   let search = modelMeta.search;
@@ -96,6 +33,11 @@ export function normalizeChatRequest(body, _defaultMode = 'session') {
     throw err;
   }
 
+  const legacyTools = Array.isArray(body.functions)
+    ? body.functions.map((fn) => ({ type: 'function', function: fn }))
+    : [];
+  const tools = normalizeTools(body.tools?.length ? body.tools : legacyTools);
+  const toolChoice = body.tool_choice ?? body.function_call ?? 'auto';
   const prompt = buildPromptFromMessages(body.messages || []);
   return {
     model: modelMeta.id,
@@ -105,13 +47,33 @@ export function normalizeChatRequest(body, _defaultMode = 'session') {
     mode: 'session',
     stream: !!body.stream,
     prompt,
+    maxTokens: body.max_completion_tokens ?? body.max_tokens,
+    stop: body.stop,
     temperature: body.temperature,
-    max_tokens: body.max_tokens,
-    tools: body.tools || [],
+    topP: body.top_p,
+    seed: body.seed,
+    tools,
+    toolChoice,
+    parallelToolCalls: body.parallel_tool_calls !== false,
+    responseFormat: body.response_format || null,
+    streamOptions: body.stream_options || {},
+    metadata: body.metadata || null,
   };
 }
 
 export function normalizeResponsesRequest(body, _defaultMode = 'session') {
+  if (body.previous_response_id && body.conversation) {
+    const error = new Error('previous_response_id and conversation cannot be used together');
+    error.status = 400;
+    error.code = 'invalid_state_parameters';
+    throw error;
+  }
+  if (body.background === true) {
+    const error = new Error('background responses are not supported by this synchronous gateway');
+    error.status = 400;
+    error.code = 'unsupported_background';
+    throw error;
+  }
   const modelMeta = resolveModel(body.model);
   let reason = modelMeta.reason;
   let search = modelMeta.search;
@@ -125,6 +87,7 @@ export function normalizeResponsesRequest(body, _defaultMode = 'session') {
     throw err;
   }
 
+  const tools = normalizeTools(body.tools || []);
   return {
     model: modelMeta.id,
     agentId: modelMeta.agentId,
@@ -133,6 +96,18 @@ export function normalizeResponsesRequest(body, _defaultMode = 'session') {
     mode: 'session',
     stream: !!body.stream,
     prompt: buildPromptFromResponsesInput(body),
+    tools,
+    toolChoice: body.tool_choice ?? 'auto',
+    parallelToolCalls: body.parallel_tool_calls !== false,
+    responseFormat: body.text?.format || null,
+    maxTokens: body.max_output_tokens,
+    temperature: body.temperature,
+    topP: body.top_p,
+    metadata: body.metadata || null,
+    instructions: body.instructions || null,
+    previousResponseId: body.previous_response_id || null,
+    store: body.store !== false,
+    include: Array.isArray(body.include) ? body.include : [],
   };
 }
 
@@ -144,11 +119,23 @@ export function responseId() {
   return `resp_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
 }
 
-export function buildChatCompletion({ id, model, text, thinking, usage, finishReason = 'stop' }) {
-  const message = { role: 'assistant', content: text || '' };
+export function buildChatCompletion({
+  id,
+  model,
+  text,
+  thinking,
+  usage,
+  toolCalls = [],
+  finishReason = 'stop',
+}) {
+  const message = {
+    role: 'assistant',
+    content: toolCalls.length && !text ? null : text || '',
+  };
   if (thinking) {
     message.reasoning_content = thinking;
   }
+  if (toolCalls.length) message.tool_calls = toolCalls;
   return {
     id,
     object: 'chat.completion',
@@ -158,7 +145,7 @@ export function buildChatCompletion({ id, model, text, thinking, usage, finishRe
       {
         index: 0,
         message,
-        finish_reason: finishReason,
+        finish_reason: toolCalls.length ? 'tool_calls' : finishReason,
       },
     ],
     usage: usage || {
@@ -187,6 +174,17 @@ export function buildChatChunk({ id, model, delta, finishReason = null, usage = 
   return chunk;
 }
 
+export function buildChatUsageChunk({ id, model, usage }) {
+  return {
+    id,
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [],
+    usage,
+  };
+}
+
 export function sseData(obj) {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
@@ -194,7 +192,16 @@ export function sseData(obj) {
 /**
  * OpenAI Responses API non-stream body
  */
-export function buildResponsesObject({ id, model, text, thinking, usage, status = 'completed' }) {
+export function buildResponsesObject({
+  id,
+  model,
+  text,
+  thinking,
+  usage,
+  toolCalls = [],
+  request = {},
+  status = 'completed',
+}) {
   const output = [];
   if (thinking) {
     output.push({
@@ -203,19 +210,31 @@ export function buildResponsesObject({ id, model, text, thinking, usage, status 
       summary: [{ type: 'summary_text', text: thinking }],
     });
   }
-  output.push({
-    type: 'message',
-    id: `msg_${id.slice(5, 15)}`,
-    role: 'assistant',
-    status: 'completed',
-    content: [
-      {
-        type: 'output_text',
-        text: text || '',
-        annotations: [],
-      },
-    ],
-  });
+  for (const call of toolCalls) {
+    output.push({
+      type: 'function_call',
+      id: `fc_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      call_id: call.id,
+      name: call.function.name,
+      arguments: call.function.arguments,
+      status: 'completed',
+    });
+  }
+  if (text || !toolCalls.length) {
+    output.push({
+      type: 'message',
+      id: `msg_${id.slice(5, 15)}`,
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: text || '',
+          annotations: [],
+        },
+      ],
+    });
+  }
   return {
     id,
     object: 'response',
@@ -223,6 +242,17 @@ export function buildResponsesObject({ id, model, text, thinking, usage, status 
     status,
     model,
     output,
+    error: null,
+    incomplete_details: null,
+    instructions: request.instructions ?? null,
+    metadata: request.metadata || {},
+    parallel_tool_calls: request.parallelToolCalls !== false,
+    temperature: request.temperature ?? 1,
+    tool_choice: request.toolChoice ?? 'auto',
+    tools: request.tools || [],
+    top_p: request.topP ?? 1,
+    max_output_tokens: request.maxTokens ?? null,
+    previous_response_id: request.previousResponseId ?? null,
     usage: {
       input_tokens: usage?.prompt_tokens || 0,
       output_tokens: usage?.completion_tokens || 0,
@@ -231,83 +261,135 @@ export function buildResponsesObject({ id, model, text, thinking, usage, status 
   };
 }
 
-export function* streamResponsesEvents({ id, model, text, thinking, usage }) {
-  yield sseData({
+export function* streamResponsesEvents({
+  id,
+  model,
+  text,
+  thinking,
+  usage,
+  toolCalls = [],
+  request = {},
+}) {
+  let sequence = 0;
+  const event = (value) => sseData({ ...value, sequence_number: sequence++ });
+  yield event({
     type: 'response.created',
     response: { id, object: 'response', status: 'in_progress', model },
   });
-  yield sseData({ type: 'response.in_progress', response: { id, status: 'in_progress' } });
+  yield event({ type: 'response.in_progress', response: { id, status: 'in_progress' } });
 
   if (thinking) {
     const itemId = `rs_${id.slice(5, 12)}`;
-    yield sseData({
+    yield event({
       type: 'response.output_item.added',
       output_index: 0,
       item: { type: 'reasoning', id: itemId },
     });
-    yield sseData({
+    yield event({
       type: 'response.reasoning_summary_text.delta',
       item_id: itemId,
       delta: thinking,
     });
-    yield sseData({
+    yield event({
       type: 'response.output_item.done',
       output_index: 0,
       item: { type: 'reasoning', id: itemId },
     });
   }
 
-  const msgId = `msg_${id.slice(5, 12)}`;
-  const outIndex = thinking ? 1 : 0;
-  yield sseData({
-    type: 'response.output_item.added',
-    output_index: outIndex,
-    item: { type: 'message', id: msgId, role: 'assistant', status: 'in_progress' },
-  });
-  yield sseData({
-    type: 'response.content_part.added',
-    item_id: msgId,
-    content_index: 0,
-    part: { type: 'output_text', text: '', annotations: [] },
-  });
+  let outIndex = thinking ? 1 : 0;
+  for (const call of toolCalls) {
+    const itemId = `fc_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const item = {
+      type: 'function_call',
+      id: itemId,
+      call_id: call.id,
+      name: call.function.name,
+      arguments: '',
+      status: 'in_progress',
+    };
+    yield event({ type: 'response.output_item.added', output_index: outIndex, item });
+    yield event({
+      type: 'response.function_call_arguments.delta',
+      item_id: itemId,
+      output_index: outIndex,
+      delta: call.function.arguments,
+    });
+    yield event({
+      type: 'response.function_call_arguments.done',
+      item_id: itemId,
+      output_index: outIndex,
+      arguments: call.function.arguments,
+    });
+    yield event({
+      type: 'response.output_item.done',
+      output_index: outIndex,
+      item: { ...item, arguments: call.function.arguments, status: 'completed' },
+    });
+    outIndex++;
+  }
 
-  // emit text in chunks for better UX
-  const chunkSize = 48;
-  const full = text || '';
-  for (let i = 0; i < full.length; i += chunkSize) {
-    const delta = full.slice(i, i + chunkSize);
-    yield sseData({
-      type: 'response.output_text.delta',
+  const msgId = `msg_${id.slice(5, 12)}`;
+  if (text || !toolCalls.length) {
+    yield event({
+      type: 'response.output_item.added',
+      output_index: outIndex,
+      item: { type: 'message', id: msgId, role: 'assistant', status: 'in_progress' },
+    });
+    yield event({
+      type: 'response.content_part.added',
       item_id: msgId,
       content_index: 0,
-      delta,
+      part: { type: 'output_text', text: '', annotations: [] },
+    });
+
+  // emit text in chunks for better UX
+    const chunkSize = 48;
+    const full = text || '';
+    for (let i = 0; i < full.length; i += chunkSize) {
+      const delta = full.slice(i, i + chunkSize);
+      yield event({
+        type: 'response.output_text.delta',
+        item_id: msgId,
+        content_index: 0,
+        delta,
+      });
+    }
+
+    yield event({
+      type: 'response.output_text.done',
+      item_id: msgId,
+      content_index: 0,
+      text: full,
+    });
+    yield event({
+      type: 'response.content_part.done',
+      item_id: msgId,
+      content_index: 0,
+      part: { type: 'output_text', text: full, annotations: [] },
+    });
+    yield event({
+      type: 'response.output_item.done',
+      output_index: outIndex,
+      item: {
+        type: 'message',
+        id: msgId,
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: full, annotations: [] }],
+      },
     });
   }
 
-  yield sseData({
-    type: 'response.output_text.done',
-    item_id: msgId,
-    content_index: 0,
-    text: full,
+  const resp = buildResponsesObject({
+    id,
+    model,
+    text,
+    thinking,
+    usage,
+    toolCalls,
+    request,
+    status: 'completed',
   });
-  yield sseData({
-    type: 'response.content_part.done',
-    item_id: msgId,
-    content_index: 0,
-    part: { type: 'output_text', text: full, annotations: [] },
-  });
-  yield sseData({
-    type: 'response.output_item.done',
-    output_index: outIndex,
-    item: {
-      type: 'message',
-      id: msgId,
-      role: 'assistant',
-      status: 'completed',
-      content: [{ type: 'output_text', text: full, annotations: [] }],
-    },
-  });
-
-  const resp = buildResponsesObject({ id, model, text, thinking, usage, status: 'completed' });
-  yield sseData({ type: 'response.completed', response: resp });
+  yield event({ type: 'response.completed', response: resp });
 }

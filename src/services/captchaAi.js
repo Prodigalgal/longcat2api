@@ -21,7 +21,7 @@ export function getCaptchaAiConfig() {
     enabled: !!ca.enabled,
     api_base: String(ca.api_base || '').replace(/\/+$/, ''),
     api_key: String(ca.api_key || ''),
-    model: String(ca.model || 'grok').trim() || 'grok',
+    model: String(ca.model || 'grok-4.5').trim() || 'grok-4.5',
     timeout: Math.max(15, Math.min(180, Number(ca.timeout) || 90)),
   };
   n.ready = !!(n.enabled && n.api_base && n.api_key);
@@ -69,15 +69,15 @@ export async function solveYodaSudokuWithAi(imageBytes) {
   const b64 = Buffer.from(imageBytes).toString('base64');
   const dataUrl = `data:image/png;base64,${b64}`;
   const prompt =
-    '这是美团/Keeta Yoda 验证码截图。常见类型：' +
-    '1) 按最短路径连接棕色圆点（connect dots / shortest line）；' +
-    '2) 按顺序点选图标（tap icons in order）。' +
-    '请根据截图里的英文提示与图案，给出按顺序经过的点坐标。' +
-    '坐标是相对整张截图宽高的比例 0~1（左上为 0,0）。' +
-    '连线题：给出折线上关键控制点（通常 3~6 个）。' +
-    '点选题：给出要点的中心点。' +
-    '严格只输出一行：POINTS=x1,y1;x2,y2;x3,y3' +
-    '示例 POINTS=0.25,0.55;0.50,0.40;0.75,0.55 不要其他文字。';
+    '这是美团/Keeta Yoda 人机验证截图。可能类型：\n' +
+    'A) Tap icons in following order：顶部有一排要按顺序点的小图标，下方是图标网格。\n' +
+    'B) Connect the dots / shortest line：连接棕色圆点。\n' +
+    'C) Move the slider：拼图滑块（若是滑块请输出 POINTS=0.5,0.5 即可）。\n' +
+    '任务：根据标题与图案，输出要点击/经过的中心坐标（相对本截图宽高 0~1，左上为0,0）。\n' +
+    '点选题：按「标题要求的顺序」依次给出每个目标图标中心（通常 3~5 个）。\n' +
+    '连线题：给出路径上 3~6 个控制点。\n' +
+    '严格只输出一行：POINTS=x1,y1;x2,y2;x3,y3\n' +
+    '示例 POINTS=0.20,0.18;0.45,0.55;0.72,0.40 不要其他文字。';
 
   try {
     const ctrl = new AbortController();

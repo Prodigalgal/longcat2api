@@ -137,8 +137,13 @@ function decodeSubscription(body) {
 export async function fetchNodes(subUrl) {
   const url = subUrl || loadSettings().sub_url;
   if (!url) throw new Error('未配置代理订阅 URL');
+  const timeoutMs = Math.max(
+    5000,
+    Number(process.env.LONGCAT2API_PROXY_SUB_TIMEOUT_MS || 20000)
+  );
   const res = await fetch(url, {
     headers: { 'User-Agent': 'longcat2api-ProxyPool/1.0' },
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`拉取订阅失败 HTTP ${res.status}`);
   const lines = decodeSubscription(await res.text());
@@ -273,8 +278,15 @@ export async function startProxy({ pickRandom = true } = {}) {
   if (!state.settings.enabled) throw new Error('代理池未启用');
   if (!state.settings.sub_url) throw new Error('未配置订阅 URL');
 
+  let nodes;
+  try {
+    nodes = await fetchNodes();
+  } catch (error) {
+    if (!state.nodes.length) throw error;
+    nodes = state.nodes;
+    state.lastError = `subscription refresh failed; using cached nodes: ${error.message}`;
+  }
   reclaimProxy();
-  const nodes = await fetchNodes();
   let selected = state.selectedTag;
   if (pickRandom || !selected) {
     selected = nodes[Math.floor(Math.random() * nodes.length)].tag;

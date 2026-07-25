@@ -126,9 +126,13 @@ export function extractCodeFromMail(mail) {
   return m ? m[1] : null;
 }
 
-export async function waitForCode(cfg, jwt, { timeout = 120000, pollInterval = 3000 } = {}) {
+export async function waitForCode(
+  cfg,
+  jwt,
+  { timeout = 120000, pollInterval = 3000, ignoreMailIds = [] } = {}
+) {
   const deadline = Date.now() + timeout;
-  const seen = new Set();
+  const seen = new Set(ignoreMailIds || []);
   let interval = Math.max(1000, pollInterval);
   let lastErr = '';
   while (Date.now() < deadline) {

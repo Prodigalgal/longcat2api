@@ -78,8 +78,17 @@ function defaultSettings() {
       enabled: false,
       api_base: '',
       api_key: '',
-      model: 'grok',
+      model: 'grok-4.5',
       timeout: 90,
+    },
+    // Account pool / sticky sessions (mimo2api-inspired)
+    session: {
+      sticky: true,
+      max_concurrency_per_account: 1,
+      queue_limit: 200,
+      queue_timeout_ms: 120000,
+      compact_threshold_tokens: 80000,
+      ttl_seconds: 259200,
     },
   };
 }
@@ -198,6 +207,42 @@ export function applyEnvOverrides(data) {
     ca.timeout = envInt('LONGCAT2API_CAPTCHA_AI_TIMEOUT', 90, 15, 180);
   }
   d.captcha_ai = ca;
+
+  const sess = d.session || {};
+  if (process.env.LONGCAT2API_SESSION_STICKY != null) {
+    sess.sticky = envBool('LONGCAT2API_SESSION_STICKY', true);
+  }
+  if (process.env.LONGCAT2API_ACCOUNT_MAX_CONCURRENCY != null) {
+    sess.max_concurrency_per_account = envInt(
+      'LONGCAT2API_ACCOUNT_MAX_CONCURRENCY',
+      1,
+      1,
+      32
+    );
+  }
+  if (process.env.LONGCAT2API_ACCOUNT_QUEUE_LIMIT != null) {
+    sess.queue_limit = envInt('LONGCAT2API_ACCOUNT_QUEUE_LIMIT', 200, 1, 10000);
+  }
+  if (process.env.LONGCAT2API_ACCOUNT_QUEUE_TIMEOUT_MS != null) {
+    sess.queue_timeout_ms = envInt(
+      'LONGCAT2API_ACCOUNT_QUEUE_TIMEOUT_MS',
+      120000,
+      1000,
+      3600000
+    );
+  }
+  if (process.env.LONGCAT2API_SESSION_COMPACT_THRESHOLD_TOKENS != null) {
+    sess.compact_threshold_tokens = envInt(
+      'LONGCAT2API_SESSION_COMPACT_THRESHOLD_TOKENS',
+      80000,
+      8000,
+      500000
+    );
+  }
+  if (process.env.LONGCAT2API_SESSION_TTL_SECONDS != null) {
+    sess.ttl_seconds = envInt('LONGCAT2API_SESSION_TTL_SECONDS', 259200, 3600, 2592000);
+  }
+  d.session = sess;
   return d;
 }
 
@@ -287,9 +332,13 @@ class ConfigStore {
       enabled: !!ca.enabled,
       api_base: String(ca.api_base || '').replace(/\/+$/, ''),
       api_key: String(ca.api_key || ''),
-      model: String(ca.model || 'grok') || 'grok',
+      model: String(ca.model || 'grok-4.5') || 'grok-4.5',
       timeout: Math.max(15, Math.min(180, Number(ca.timeout) || 90)),
     };
+  }
+
+  getSession() {
+    return { ...defaultSettings().session, ...(this.data.session || {}) };
   }
 
   getDefaultMode() {

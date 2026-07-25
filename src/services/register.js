@@ -1,8 +1,8 @@
 /**
  * LongCat 注册机（仅海外 mykeeta 邮箱）
  *
- * 全自动：Playwright 打开 passport.mykeeta.com（加载 H5guard）
- *   → 邮箱 OTP（Cloudflare Temp Mail）→ longcat Cookie → 入库探测
+ * 全自动：Camoufox / Patchright 打开 passport.mykeeta.com（加载 H5guard）
+ *   → 邮箱 OTP（Temp Mail）→ longcat Cookie → 入库探测
  *
  * 半自动兜底：浏览器不可用时仅创建邮箱 + draft
  */
@@ -135,7 +135,7 @@ export async function prepareRegisterMailbox() {
     mykeeta_login_url: buildLoginPageUrl(),
     flow: summarizeFlow(),
     auto_register_ready: true,
-    tip: '全自动请用 /api/account/auto-register；需 Playwright chromium + 建议海外代理。',
+    tip: '全自动请用 /api/account/auto-register；需 Camoufox 或 Patchright + 建议海外代理。',
   };
 }
 
@@ -147,7 +147,7 @@ function randomPassword() {
 }
 
 /**
- * Full auto register one account (Playwright + temp mail).
+ * Full auto register one account (Camoufox/Patchright + temp mail).
  * Falls back to draft mailbox if browser fails and soft_fail=true.
  */
 export async function runOneRegisterAttempt({ jobId, soft_fail = false } = {}) {
@@ -158,11 +158,26 @@ export async function runOneRegisterAttempt({ jobId, soft_fail = false } = {}) {
 
   try {
     log('full-auto mykeeta browser register starting...');
-    const result = await registerOneAccount({
-      onLog: log,
-      // LongCat / mykeeta often slow — default 7 minutes
-      timeoutMs: Number(process.env.LONGCAT2API_REGISTER_TIMEOUT_MS || 420000),
-    });
+    const browserAttempts = Math.max(
+      1,
+      Math.min(4, Number(process.env.LONGCAT2API_REGISTER_BROWSER_ATTEMPTS || 3))
+    );
+    let result;
+    let lastError;
+    for (let attempt = 1; attempt <= browserAttempts; attempt++) {
+      try {
+        log(`browser attempt ${attempt}/${browserAttempts}`);
+        result = await registerOneAccount({
+          onLog: log,
+          timeoutMs: Number(process.env.LONGCAT2API_REGISTER_TIMEOUT_MS || 420000),
+        });
+        break;
+      } catch (error) {
+        lastError = error;
+        log(`browser attempt ${attempt}/${browserAttempts} failed: ${error.message}`);
+      }
+    }
+    if (!result) throw lastError || new Error('all browser registration attempts failed');
 
     const acc = {
       id: randomUUID().replace(/-/g, '').slice(0, 16),
@@ -276,8 +291,9 @@ export async function bindCookieToAccount(accountId, cookie) {
  * Batch full-auto register. success = probe-ok accounts with cookie.
  */
 export function startBatchRegisterJob({
-  success_target = 3,
-  max_attempts = 5,
+  success_target = 1,
+  // Local / risk control: keep attempts low (default ≤3)
+  max_attempts = Number(process.env.LONGCAT2API_REGISTER_MAX_ATTEMPTS || 3),
   concurrent = 1,
   soft_fail = false,
 } = {}) {

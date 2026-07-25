@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium } from 'patchright';
 import { writeFileSync, mkdirSync } from 'fs';
 
 const url =

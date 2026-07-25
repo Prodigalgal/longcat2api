@@ -10,6 +10,7 @@ import {
   getUsage,
   listRequestLogs,
   getRegisterJob,
+  accountPoolStats,
 } from '../db/index.js';
 import {
   importCookieAccount,
@@ -34,9 +35,11 @@ import {
   fetchNodes,
 } from '../services/proxyPool.js';
 import { probeAccount } from '../services/longcatClient.js';
-import { renewAll, renewOneAccount } from '../services/keepalive.js';
+import { renewAll, renewOneAccount, keepaliveStatus } from '../services/keepalive.js';
 import { summarizeFlow, buildLoginPageUrl, MYKEETA } from '../services/mykeetaClient.js';
 import { getCaptchaAiConfig, solveCaptchaWithAi } from '../services/captchaAi.js';
+import { accountCoordinator } from '../services/accountCoordinator.js';
+import { sessionStats, cleanupSessions } from '../services/sessionStore.js';
 
 const router = Router();
 
@@ -85,6 +88,7 @@ router.get('/api/config', (_req, res) => {
     admin_password: c.admin_password,
     default_mode: c.default_mode,
     keepalive_interval_seconds: c.keepalive_interval_seconds,
+    session: config.getSession(),
     temp_mail: {
       ...config.getTempMail(),
       configured: isTempMailConfigured(config.getTempMail()),
@@ -131,6 +135,9 @@ router.post('/api/config', (req, res) => {
   if (body.proxy_pool && typeof body.proxy_pool === 'object') {
     patch.proxy_pool = { ...config.getProxyPool(), ...body.proxy_pool };
   }
+  if (body.session && typeof body.session === 'object') {
+    patch.session = { ...config.getSession(), ...body.session };
+  }
   config.update(patch);
   res.json({ ok: true, message: 'saved' });
 });
@@ -144,10 +151,39 @@ router.get('/api/logs', (req, res) => {
   res.json({ ok: true, logs: listRequestLogs(limit) });
 });
 
+router.get('/api/pool/status', (_req, res) => {
+  cleanupSessions();
+  res.json({
+    ok: true,
+    pool: accountPoolStats(),
+    coordinator: accountCoordinator.status(),
+    sessions: sessionStats(),
+    keepalive: keepaliveStatus(),
+  });
+});
+
+router.get('/api/accounts/renew-status', (_req, res) => {
+  res.json({ ok: true, ...keepaliveStatus() });
+});
+
+router.get('/api/registration/status', (_req, res) => {
+  const ca = getCaptchaAiConfig();
+  res.json({
+    ok: true,
+    captcha_ai_ready: ca.ready,
+    temp_mail_configured: isTempMailConfigured(config.getTempMail()),
+    browser_engine: process.env.LONGCAT2API_BROWSER_ENGINE || 'camoufox',
+  });
+});
+
 // ─── accounts ───────────────────────────────────────────────
 
 router.get('/api/accounts', (_req, res) => {
-  res.json({ ok: true, accounts: listAccounts({ includeSecrets: false }) });
+  res.json({
+    ok: true,
+    accounts: listAccounts({ includeSecrets: false }),
+    pool: accountPoolStats(),
+  });
 });
 
 router.post('/api/account/import-cookie', async (req, res) => {
