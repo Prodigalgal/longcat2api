@@ -19,6 +19,7 @@ import { buildLoginPageUrl, MYKEETA } from './mykeetaClient.js';
 import { getCaptchaAiConfig, solveYodaSudokuWithAi } from './captchaAi.js';
 import { detectSlider, solveSliderTraditional } from './sliderCaptcha.js';
 import { launchBrowser, defaultContextOptions } from './browser.js';
+import { artifactPath } from './runtimePaths.js';
 import {
   ensureAuthProxy,
   cookiesToLongcatSession,
@@ -905,10 +906,9 @@ async function trySolveYoda(page, onLog) {
 
   // debug screenshot (best-effort)
   try {
-    const { mkdirSync } = await import('node:fs');
-    mkdirSync('data/debug', { recursive: true });
-    stage(onLog, '保存出现截图 data/debug/yoda-appear.png…');
-    await page.screenshot({ path: 'data/debug/yoda-appear.png' }).catch(() => {});
+    const screenshotPath = artifactPath('yoda-appear.png');
+    stage(onLog, `保存出现截图 ${screenshotPath}…`);
+    await page.screenshot({ path: screenshotPath }).catch(() => {});
   } catch {
     /* ignore */
   }

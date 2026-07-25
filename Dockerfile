@@ -2,12 +2,14 @@
 # linux/amd64 + linux/arm64 (Oracle A1)
 # Stock Playwright is NOT used.
 
-FROM node:20-bookworm AS deps
+FROM node:22-bookworm AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv make g++ ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
+RUN mkdir -p scripts
+COPY scripts/postinstall-browsers.mjs ./scripts/postinstall-browsers.mjs
 ENV LONGCAT2API_SKIP_BROWSER_DOWNLOAD=1 \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm install --omit=dev
@@ -46,7 +48,7 @@ RUN set -eux; \
   chmod 755 /opt/sing-box/sing-box; \
   rm -rf /tmp/sb.tgz /tmp/sing-box-*
 
-FROM node:20-bookworm AS runtime
+FROM node:22-bookworm AS runtime
 WORKDIR /app
 
 # Camoufox (Firefox) + Patchright Chromium runtime libs

@@ -236,6 +236,7 @@ longcat2api/
 | 公网 | `https://longcat2api.mnnu.eu.org` |
 | 命名空间 | `longcat2api` |
 | 镜像 | `speedproxy/longcat2api:sha-<gitsha>`（多架构 amd64/arm64） |
+| 运行时 | Node.js 22 + Python 本地验证码运行时 |
 | 状态卷 | Longhorn PVC `longcat2api-state` → `/var/lib/longcat2api` |
 | 节点 | `infra.mnnu/node-class=core-public` |
 | 流式超时 | HTTPRoute 标签 `infra.mnnu/traffic-class=streaming-ai` |

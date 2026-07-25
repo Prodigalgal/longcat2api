@@ -25,7 +25,7 @@
     "test": "npm run test:slider && npm run test:lifecycle && npm run test:protocol && npm run test:session"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "keywords": [
     "longcat",

@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { artifactPath } from './runtimePaths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -39,7 +40,7 @@ export const LOCAL_SOLVER_TIMEOUT = {
 };
 
 function tmpDir() {
-  const d = path.join(ROOT, 'data', 'debug', 'solver-tmp');
+  const d = artifactPath('solver-tmp');
   mkdirSync(d, { recursive: true });
   return d;
 }
