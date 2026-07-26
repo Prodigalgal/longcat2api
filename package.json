@@ -19,7 +19,7 @@
     "test:browser": "node scripts/local-browser-smoke.mjs",
     "test:keepalive": "node scripts/local-keepalive-once.mjs",
     "test:slider": "node --test src/services/sliderCaptcha.test.js",
-    "test:lifecycle": "node --test src/services/keepalive.test.js src/services/longcatClient.test.js src/services/tempMail.test.js",
+    "test:lifecycle": "node --test src/services/keepalive.test.js src/services/longcatClient.test.js src/services/registerJobs.test.js src/services/tempMail.test.js",
     "test:protocol": "node --test src/openai/openai.test.js",
     "test:session": "node --test src/services/accountCoordinator.test.js src/services/sessionStore.test.js src/openai/responseStore.test.js",
     "test": "npm run test:slider && npm run test:lifecycle && npm run test:protocol && npm run test:session"

@@ -222,6 +222,7 @@ longcat2api/
 | POST | `/api/accounts/refresh-mail-jwts` | 批量重新签发邮箱 JWT（响应不含 JWT 明文） |
 | POST | `/api/account/auto-register` | 单次注册准备 |
 | POST | `/api/account/auto-register-batch` | 批量异步任务 |
+| GET | `/api/account/auto-register-batch/active` | 当前活动注册任务（页面恢复与 single-flight） |
 | GET/POST | `/api/temp-mail/*` | 临时邮箱 |
 | POST | `/api/proxy/start\|stop\|rotate\|test` | 代理池 |
 

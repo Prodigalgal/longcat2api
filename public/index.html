@@ -29,7 +29,7 @@
     .secret-field { display:flex; align-items:stretch; } .secret-field input { border-right:0; min-width:0; }
     .secret-toggle { width:40px; border:1px solid #bfc8c1; background:#fff; color:var(--muted); cursor:pointer; flex:0 0 40px; }
     button.action { border:1px solid #aab5ad; background:#fff; min-height:34px; padding:0 12px; cursor:pointer; color:var(--ink); font:inherit; }
-    button.action:hover { background:#f8f9f8; } button.primary { background:var(--green); color:#fff; border-color:var(--green); }
+    button.action:hover { background:#f8f9f8; } button.action:disabled { cursor:not-allowed; opacity:.55; } button.primary { background:var(--green); color:#fff; border-color:var(--green); }
     button.primary:hover { background:#10653d; } button.danger { color:var(--red); border-color:#efb3ad; }
     .actions { display:flex; gap:8px; flex-wrap:wrap; }
     table { width:100%; border-collapse:collapse; background:var(--paper); border:1px solid var(--line); }
@@ -82,8 +82,8 @@
       <div class="bar"><h2>注册机</h2>
         <div class="actions">
           <button class="action" onclick="saveRegisterSettings()">保存设置</button>
-          <button class="action primary" onclick="startBatch()">批量注册</button>
-          <button class="action" onclick="registerOne()">单次注册</button>
+          <button class="action primary" id="batchRegisterButton" onclick="startBatch()">批量注册</button>
+          <button class="action" id="singleRegisterButton" onclick="registerOne()">单次注册</button>
         </div>
       </div>
       <div class="panel grid three">
@@ -168,7 +168,7 @@
   </main>
   <div id="toast"></div>
   <script>
-    let config = {}, activeJobId = '';
+    let config = {}, activeJobId = '', jobPollTimer = null, jobPollInFlight = false;
     const $ = id => document.getElementById(id);
     const esc = v => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const toast = (m, bad=false) => { const e=$('toast'); e.textContent=m; e.style.background=bad?'#b42318':'#17211b'; e.style.display='block'; setTimeout(()=>e.style.display='none', 3800); };
@@ -206,6 +206,7 @@
             '<button class="action danger" data-act="del">删除</button>'+
           '</div></td></tr>').join('') : '<tr><td colspan="6" class="empty">暂无账号 — 导入 Cookie 或运行注册</td></tr>';
         await loadRuntime();
+        await restoreActiveJob();
       } catch (e) { toast(e.message, true); }
     }
     function applyForms() {
@@ -293,29 +294,59 @@
     async function registerOne(){
       try{
         $('batchStatus').textContent='单次注册启动中…';
-        const j=await api('/api/account/auto-register',{method:'POST',body:JSON.stringify({})});
-        $('batchStatus').textContent=j.message||'后台运行中';
-        if(j.job_id){ activeJobId=j.job_id; pollJob(); }
-        toast('已启动单次注册');
+        const response=await api('/api/account/auto-register',{method:'POST',body:JSON.stringify({})});
+        const job=unwrapJob(response);
+        if(!job?.id) throw new Error('注册接口未返回任务');
+        activeJobId=job.id; renderJob(job); setRegistrationBusy(true); scheduleJobPoll(1000);
+        toast(response.reused?'已有注册任务运行中':'已启动单次注册');
       }catch(e){ toast(e.message,true); }
     }
     async function startBatch(){
       try{
         await saveRegisterSettings();
-        const j=await api('/api/account/auto-register-batch',{method:'POST',body:JSON.stringify({
+        const response=await api('/api/account/auto-register-batch',{method:'POST',body:JSON.stringify({
           success_target:Number($('regTarget').value), max_attempts:Number($('regCount').value), concurrent:Number($('regConcurrent').value)
         })});
-        activeJobId=j.job_id||j.id; renderJob(j); pollJob(); toast('批量注册已启动');
+        const job=unwrapJob(response);
+        if(!job?.id) throw new Error('注册接口未返回任务');
+        activeJobId=job.id; renderJob(job); setRegistrationBusy(true); scheduleJobPoll(1000);
+        toast(response.reused?'已有注册任务运行中':'批量注册已启动');
       }catch(e){toast(e.message,true)}
     }
+    const unwrapJob = response => response?.job ?? response;
+    const isActiveJob = job => ['running','pending','stopping'].includes(job?.status);
+    function setRegistrationBusy(busy){
+      $('batchRegisterButton').disabled=busy;
+      $('singleRegisterButton').disabled=busy;
+    }
+    function scheduleJobPoll(delay=3500){
+      if(jobPollTimer) clearTimeout(jobPollTimer);
+      jobPollTimer=setTimeout(pollJob,delay);
+    }
+    async function restoreActiveJob(){
+      if(activeJobId) return;
+      const response=await api('/api/account/auto-register-batch/active');
+      const job=unwrapJob(response);
+      if(!job){ setRegistrationBusy(false); return; }
+      activeJobId=job.id;
+      renderJob(job);
+      setRegistrationBusy(true);
+      scheduleJobPoll(1000);
+    }
     async function pollJob(){
-      if(!activeJobId) return;
+      if(!activeJobId||jobPollInFlight) return;
+      jobPollInFlight=true;
       try{
-        const j=await api('/api/account/auto-register-batch/'+activeJobId);
-        renderJob(j);
-        if(['running','pending','stopping'].includes(j.status)) setTimeout(pollJob, 3500);
-        else { activeJobId=''; await loadAll(); }
-      }catch(e){ toast(e.message,true); activeJobId=''; }
+        const response=await api('/api/account/auto-register-batch/'+activeJobId);
+        const job=unwrapJob(response);
+        if(!job?.id) throw new Error('任务状态响应无效');
+        renderJob(job);
+        if(isActiveJob(job)) scheduleJobPoll(3500);
+        else { activeJobId=''; setRegistrationBusy(false); await loadAll(); }
+      }catch(e){
+        $('batchStatus').textContent='任务状态读取失败，8 秒后重试 · '+e.message;
+        scheduleJobPoll(8000);
+      }finally{ jobPollInFlight=false; }
     }
     function renderJob(j){
       $('batchStatus').textContent = (j.message||j.status||'') + ' · 成功 '+(j.success_count??j.success??0)+' · 失败 '+(j.fail_count??j.failed??0);

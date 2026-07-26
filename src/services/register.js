@@ -15,6 +15,7 @@ import {
   appendRegisterLog,
   patchRegisterJob,
   getRegisterJob,
+  getActiveRegisterJob,
   getAccount,
 } from '../db/index.js';
 import { createAddress, isTempMailConfigured } from './tempMail.js';
@@ -290,6 +291,20 @@ export async function bindCookieToAccount(accountId, cookie) {
 /**
  * Batch full-auto register. success = probe-ok accounts with cookie.
  */
+export function getActiveBatchRegisterJob({ now = Date.now(), staleMs } = {}) {
+  const job = getActiveRegisterJob();
+  if (!job) return null;
+  const configuredStaleMs = Number(
+    staleMs ?? process.env.LONGCAT2API_REGISTER_JOB_STALE_MS ?? 15 * 60 * 1000
+  );
+  const maxIdleMs = Math.max(60_000, configuredStaleMs || 15 * 60 * 1000);
+  if (now - Number(job.updated_at || job.created_at || 0) <= maxIdleMs) return job;
+
+  patchRegisterJob(job.id, { status: 'error', finished_at: now });
+  appendRegisterLog(job.id, `batch marked stale after ${Math.floor(maxIdleMs / 1000)}s without updates`);
+  return null;
+}
+
 export function startBatchRegisterJob({
   success_target = 1,
   // Local / risk control: keep attempts low (default ≤3)
@@ -297,6 +312,9 @@ export function startBatchRegisterJob({
   concurrent = 1,
   soft_fail = false,
 } = {}) {
+  const active = getActiveBatchRegisterJob();
+  if (active) return { ...active, reused: true };
+
   const id = randomUUID();
   createRegisterJob({
     id,
@@ -368,5 +386,5 @@ export function startBatchRegisterJob({
     appendRegisterLog(id, `batch error: ${e.message}`);
   });
 
-  return getRegisterJob(id);
+  return { ...getRegisterJob(id), reused: false };
 }

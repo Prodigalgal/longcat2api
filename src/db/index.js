@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS register_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_accounts_enabled ON accounts(enabled, is_valid);
 CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_register_jobs_status_updated ON register_jobs(status, updated_at DESC);
 `;
 
 export function initDb() {
@@ -373,6 +374,22 @@ export function createRegisterJob(job) {
 
 export function getRegisterJob(id) {
   const row = getDb().prepare('SELECT * FROM register_jobs WHERE id = ?').get(id);
+  if (!row) return null;
+  return {
+    ...row,
+    logs: safeJson(row.logs, []),
+  };
+}
+
+export function getActiveRegisterJob() {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM register_jobs
+       WHERE status IN ('running', 'pending', 'stopping')
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`
+    )
+    .get();
   if (!row) return null;
   return {
     ...row,

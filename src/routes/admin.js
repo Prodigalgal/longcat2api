@@ -18,6 +18,7 @@ import {
   runOneRegisterAttempt,
   bindCookieToAccount,
   startBatchRegisterJob,
+  getActiveBatchRegisterJob,
   parseCookieString,
 } from '../services/register.js';
 import {
@@ -456,7 +457,11 @@ router.post('/api/account/auto-register', async (req, res) => {
       ok: true,
       async: true,
       job_id: job.id,
-      message: '全自动注册已后台启动（约 3–8 分钟）。请轮询 GET /api/account/auto-register-batch/{job_id}',
+      reused: !!job.reused,
+      job,
+      message: job.reused
+        ? '已有注册任务运行中，已返回现有任务。'
+        : '全自动注册已后台启动（约 3–8 分钟）。请轮询 GET /api/account/auto-register-batch/{job_id}',
       poll: `/api/account/auto-register-batch/${job.id}`,
     });
   } catch (e) {
@@ -473,7 +478,11 @@ router.post('/api/account/auto-register-batch', (req, res) => {
     concurrent: body.concurrent ?? tm.concurrent ?? 1,
     soft_fail: !!body.soft_fail,
   });
-  res.json({ ok: true, job_id: job.id, job });
+  res.json({ ok: true, job_id: job.id, reused: !!job.reused, job });
+});
+
+router.get('/api/account/auto-register-batch/active', (_req, res) => {
+  res.json({ ok: true, job: getActiveBatchRegisterJob() });
 });
 
 router.get('/api/account/auto-register-batch/:id', (req, res) => {
