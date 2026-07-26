@@ -402,6 +402,17 @@ export function getActiveRegisterJob() {
   };
 }
 
+export function getLatestRegisterJob() {
+  const row = getDb()
+    .prepare('SELECT * FROM register_jobs ORDER BY created_at DESC LIMIT 1')
+    .get();
+  if (!row) return null;
+  return {
+    ...row,
+    logs: safeJson(row.logs, []),
+  };
+}
+
 export function failInterruptedRegisterJobs(reason = 'service restarted during registration') {
   const jobs = getDb()
     .prepare(

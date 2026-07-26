@@ -10,6 +10,7 @@ import {
   getUsage,
   listRequestLogs,
   getRegisterJob,
+  getLatestRegisterJob,
   accountPoolStats,
 } from '../db/index.js';
 import {
@@ -482,7 +483,11 @@ router.post('/api/account/auto-register-batch', (req, res) => {
 });
 
 router.get('/api/account/auto-register-batch/active', (_req, res) => {
-  res.json({ ok: true, job: getActiveBatchRegisterJob() });
+  res.json({
+    ok: true,
+    job: getActiveBatchRegisterJob(),
+    latest: getLatestRegisterJob(),
+  });
 });
 
 router.get('/api/account/auto-register-batch/:id', (req, res) => {

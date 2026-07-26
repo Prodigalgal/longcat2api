@@ -313,7 +313,7 @@
         toast(response.reused?'已有注册任务运行中':'批量注册已启动');
       }catch(e){toast(e.message,true)}
     }
-    const unwrapJob = response => response?.job ?? response;
+    const unwrapJob = response => response && Object.prototype.hasOwnProperty.call(response,'job') ? response.job : response;
     const isActiveJob = job => ['running','pending','stopping'].includes(job?.status);
     function setRegistrationBusy(busy){
       $('batchRegisterButton').disabled=busy;
@@ -327,7 +327,11 @@
       if(activeJobId) return;
       const response=await api('/api/account/auto-register-batch/active');
       const job=unwrapJob(response);
-      if(!job){ setRegistrationBusy(false); return; }
+      if(!job){
+        if(response.latest) renderJob(response.latest);
+        setRegistrationBusy(false);
+        return;
+      }
       activeJobId=job.id;
       renderJob(job);
       setRegistrationBusy(true);
