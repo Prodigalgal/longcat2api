@@ -40,4 +40,15 @@ test('reuses an active registration job and recovers stale jobs', async (t) => {
   const expired = db.getRegisterJob('job-running');
   assert.equal(expired.status, 'error');
   assert.match(expired.logs.at(-1).msg, /marked stale/);
+
+  db.createRegisterJob({
+    id: 'job-interrupted',
+    success_target: 1,
+    max_attempts: 1,
+    concurrent: 1,
+  });
+  assert.equal(db.failInterruptedRegisterJobs('service restarted during test'), 1);
+  const interrupted = db.getRegisterJob('job-interrupted');
+  assert.equal(interrupted.status, 'error');
+  assert.match(interrupted.logs.at(-1).msg, /service restarted during test/);
 });

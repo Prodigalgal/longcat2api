@@ -402,6 +402,29 @@ export function getActiveRegisterJob() {
   };
 }
 
+export function failInterruptedRegisterJobs(reason = 'service restarted during registration') {
+  const jobs = getDb()
+    .prepare(
+      `SELECT * FROM register_jobs
+       WHERE status IN ('running', 'pending', 'stopping')`
+    )
+    .all();
+  const now = Date.now();
+  const update = getDb().prepare(
+    `UPDATE register_jobs
+     SET status = 'error', logs = ?, finished_at = ?, updated_at = ?
+     WHERE id = ?`
+  );
+  const transaction = getDb().transaction(() => {
+    for (const row of jobs) {
+      const logs = [...safeJson(row.logs, []), { t: now, msg: String(reason) }].slice(-200);
+      update.run(JSON.stringify(logs), now, now, row.id);
+    }
+  });
+  transaction();
+  return jobs.length;
+}
+
 export function appendRegisterLog(id, line) {
   const job = getRegisterJob(id);
   if (!job) return;

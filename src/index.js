@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { config, paths } from './config.js';
-import { closeDb, initDb } from './db/index.js';
+import { closeDb, failInterruptedRegisterJobs, initDb } from './db/index.js';
 import openaiRoutes from './routes/openai.js';
 import adminRoutes from './routes/admin.js';
 import { requireAdmin } from './middleware/auth.js';
@@ -39,6 +39,10 @@ for (const d of [
   }
 }
 initDb();
+const interruptedRegisterJobs = failInterruptedRegisterJobs();
+if (interruptedRegisterJobs) {
+  console.warn(`[startup] marked ${interruptedRegisterJobs} interrupted register job(s) as error`);
+}
 config.load();
 
 // Register readiness (logged once)
