@@ -52,4 +52,15 @@ test('reuses an active registration job and recovers stale jobs', async (t) => {
   assert.equal(interrupted.status, 'error');
   assert.match(interrupted.logs.at(-1).msg, /service restarted during test/);
   assert.equal(db.getLatestRegisterJob().id, 'job-interrupted');
+
+  db.appendRegisterLog(
+    'job-interrupted',
+    'got OTP: 123456 email=user@example.com https://passport.example/api?token=secret&apack=value'
+  );
+  const sanitized = db.getRegisterJob('job-interrupted').logs.at(-1).msg;
+  assert.doesNotMatch(sanitized, /123456|user@example\.com|token=secret|apack=value/);
+  assert.match(sanitized, /OTP: <redacted>|OTP <redacted>/);
+  assert.match(sanitized, /us\*\*\*@example\.com/);
+  assert.match(sanitized, /\?<redacted>/);
+  assert.equal(db.sanitizeStoredRegisterJobLogs(), 0);
 });

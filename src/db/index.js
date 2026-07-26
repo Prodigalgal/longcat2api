@@ -73,6 +73,23 @@ CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_register_jobs_status_updated ON register_jobs(status, updated_at DESC);
 `;
 
+export function sanitizeRegisterLogMessage(value) {
+  return String(value || '')
+    .replace(/(https?:\/\/[^\s?]+)\?[^\s]+/gi, '$1?<redacted>')
+    .replace(/\b([A-Z0-9._%+-]{1,2})[A-Z0-9._%+-]*(@[A-Z0-9.-]+\.[A-Z]{2,})\b/gi, '$1***$2')
+    .replace(/(\b(?:got\s+)?OTP(?:\s+filled)?\s*[:=]?\s*)\d{4,8}\b/gi, '$1<redacted>')
+    .replace(/\b((?:passport_)?token|password|cookie|jwt)\s*[:=]\s*[^\s,}"']+/gi, '$1=<redacted>')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '<redacted-jwt>');
+}
+
+function sanitizeRegisterLogs(logs) {
+  return (Array.isArray(logs) ? logs : []).map((entry) =>
+    typeof entry === 'string'
+      ? sanitizeRegisterLogMessage(entry)
+      : { ...entry, msg: sanitizeRegisterLogMessage(entry?.msg ?? entry?.message ?? '') }
+  );
+}
+
 export function initDb() {
   fs.mkdirSync(path.dirname(paths.sqlite), { recursive: true });
   db = new Database(paths.sqlite);
@@ -382,7 +399,7 @@ export function getRegisterJob(id) {
   if (!row) return null;
   return {
     ...row,
-    logs: safeJson(row.logs, []),
+    logs: sanitizeRegisterLogs(safeJson(row.logs, [])),
   };
 }
 
@@ -398,7 +415,7 @@ export function getActiveRegisterJob() {
   if (!row) return null;
   return {
     ...row,
-    logs: safeJson(row.logs, []),
+    logs: sanitizeRegisterLogs(safeJson(row.logs, [])),
   };
 }
 
@@ -409,8 +426,29 @@ export function getLatestRegisterJob() {
   if (!row) return null;
   return {
     ...row,
-    logs: safeJson(row.logs, []),
+    logs: sanitizeRegisterLogs(safeJson(row.logs, [])),
   };
+}
+
+export function sanitizeStoredRegisterJobLogs() {
+  const rows = getDb().prepare('SELECT id, logs FROM register_jobs').all();
+  const update = getDb().prepare(
+    'UPDATE register_jobs SET logs = ?, updated_at = ? WHERE id = ?'
+  );
+  const now = Date.now();
+  let changed = 0;
+  const transaction = getDb().transaction(() => {
+    for (const row of rows) {
+      const before = safeJson(row.logs, []);
+      const after = sanitizeRegisterLogs(before);
+      const encoded = JSON.stringify(after);
+      if (encoded === JSON.stringify(before)) continue;
+      update.run(encoded, now, row.id);
+      changed++;
+    }
+  });
+  transaction();
+  return changed;
 }
 
 export function failInterruptedRegisterJobs(reason = 'service restarted during registration') {
@@ -428,7 +466,10 @@ export function failInterruptedRegisterJobs(reason = 'service restarted during r
   );
   const transaction = getDb().transaction(() => {
     for (const row of jobs) {
-      const logs = [...safeJson(row.logs, []), { t: now, msg: String(reason) }].slice(-200);
+      const logs = [
+        ...sanitizeRegisterLogs(safeJson(row.logs, [])),
+        { t: now, msg: sanitizeRegisterLogMessage(reason) },
+      ].slice(-200);
       update.run(JSON.stringify(logs), now, now, row.id);
     }
   });
@@ -439,7 +480,10 @@ export function failInterruptedRegisterJobs(reason = 'service restarted during r
 export function appendRegisterLog(id, line) {
   const job = getRegisterJob(id);
   if (!job) return;
-  const logs = [...(job.logs || []), { t: Date.now(), msg: String(line) }].slice(-200);
+  const logs = [
+    ...(job.logs || []),
+    { t: Date.now(), msg: sanitizeRegisterLogMessage(line) },
+  ].slice(-200);
   getDb()
     .prepare(
       `UPDATE register_jobs SET logs = ?, updated_at = ? WHERE id = ?`
