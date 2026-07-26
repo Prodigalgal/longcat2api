@@ -44,6 +44,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       # Optional: pin GitOps image tag when GITOPS_SSH_KEY is configured
       - name: Update GitOps image tag
