@@ -233,7 +233,7 @@ curl https://longcat2api.mnnu.eu.org/v1/chat/completions \
 3. 成功：`is_valid=1`，清 `error_count`  
 4. 失败：累计错误，连续失败可自动 `enabled=0`  
 5. 周期：`LONGCAT2API_KEEPALIVE_INTERVAL_SECONDS`（默认 6h）
-6. 鉴权失效：账号保存了邮箱凭据或 Temp Mail 管理端可重新签发 JWT 时，自动走 mykeeta 邮箱登录；需要 OTP 时读取新邮件，并处理可能出现的 Yoda 验证
+6. 鉴权失效：主 session 探针和备用 `user-current` 均确认现有 Cookie/token 已失效后，才自动走 mykeeta 邮箱登录；网络错误或单个 token-like 错误不会提前触发重新授权
 7. 邮箱 JWT 失效：先用管理端 `GET /admin/address` 精确查找地址，再用 `GET /admin/show_password/:id` 重新签发，成功登录后持久化新 JWT
 
 管理接口：`POST /api/account/:id/refresh-mail-jwt` 刷新单账号，`POST /api/accounts/refresh-mail-jwts` 批量刷新。两者只返回状态，不返回 JWT 明文。

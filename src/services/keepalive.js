@@ -18,14 +18,15 @@ const recoveryFlights = new Map();
 
 export function shouldReauthorize(
   acc,
-  detail = '',
-  { tempMailConfigured = isTempMailConfigured(config.getTempMail()) } = {}
+  _detail = '',
+  {
+    tempMailConfigured = isTempMailConfigured(config.getTempMail()),
+    authExpired = false,
+  } = {}
 ) {
   if (!acc?.email || (!acc.password && !acc.mail_jwt && !tempMailConfigured)) return false;
   if (!acc.cookie && !acc.passport_token) return true;
-  return /auth|unauthor|forbidden|expired|invalid.*(?:cookie|token|session)|cookie|token|not\s*logged|log\s*in|login|登录|未登录|HTTP\s*(?:401|403)/i.test(
-    String(detail || '')
-  );
+  return authExpired === true;
 }
 
 async function recoverAccount(acc) {
@@ -63,7 +64,10 @@ export async function renewOneAccount(acc) {
   let current = acc;
   let result = await probeAccount(current, { proxyUrl });
   let reauthorized = false;
-  if (!result.ok && shouldReauthorize(current, result.detail)) {
+  if (
+    !result.ok &&
+    shouldReauthorize(current, result.detail, { authExpired: result.authExpired === true })
+  ) {
     try {
       current = await recoverAccount(current);
       result = await probeAccount(current, { proxyUrl });

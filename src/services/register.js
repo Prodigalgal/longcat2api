@@ -94,9 +94,11 @@ export async function importCookieAccount(input, { probe = true } = {}) {
   insertAccount(acc);
   if (probe) {
     const r = await probeAccount(acc);
+    const checkedAt = Date.now();
     updateAccount(acc.id, {
       is_valid: r.ok,
-      last_test_at: Date.now(),
+      last_test_at: checkedAt,
+      ...(r.ok ? { last_renew_at: checkedAt } : {}),
       renew_error: r.ok ? '' : r.detail,
     });
     return { ok: r.ok, account_id: acc.id, detail: r.detail, email: acc.email };
@@ -199,9 +201,11 @@ export async function runOneRegisterAttempt({ jobId, soft_fail = false } = {}) {
     insertAccount(acc);
 
     const probe = await probeAccount(acc);
+    const checkedAt = Date.now();
     updateAccount(acc.id, {
       is_valid: probe.ok,
-      last_test_at: Date.now(),
+      last_test_at: checkedAt,
+      ...(probe.ok ? { last_renew_at: checkedAt } : {}),
       renew_error: probe.ok ? '' : probe.detail,
     });
     log(`probe: ${probe.ok ? 'ok' : 'fail'} ${probe.detail || ''}`);
@@ -280,9 +284,11 @@ export async function bindCookieToAccount(accountId, cookie) {
   });
   const acc = getAccount(accountId);
   const r = await probeAccount(acc);
+  const checkedAt = Date.now();
   updateAccount(accountId, {
     is_valid: r.ok,
-    last_test_at: Date.now(),
+    last_test_at: checkedAt,
+    ...(r.ok ? { last_renew_at: checkedAt } : {}),
     renew_error: r.ok ? '' : r.detail,
   });
   return { ok: r.ok, detail: r.detail, account_id: accountId };

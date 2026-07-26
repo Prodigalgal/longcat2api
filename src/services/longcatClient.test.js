@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isAuthenticatedUserCurrent, isSessionRateLimit } from './longcatClient.js';
+import {
+  isAuthenticatedUserCurrent,
+  isExplicitAuthFailure,
+  isSessionRateLimit,
+} from './longcatClient.js';
 
 test('rejects code=0 anonymous user-current payloads', () => {
   assert.equal(
@@ -24,4 +28,11 @@ test('classifies only retryable session-create throttling messages', () => {
   assert.equal(isSessionRateLimit('操作太快啦，请稍后再试～'), true);
   assert.equal(isSessionRateLimit('HTTP 429 Too Many Requests'), true);
   assert.equal(isSessionRateLimit('authentication expired'), false);
+});
+
+test('classifies only explicit fallback authentication failures', () => {
+  assert.equal(isExplicitAuthFailure('登录后才能继续对话哦~'), true);
+  assert.equal(isExplicitAuthFailure('token expired'), true);
+  assert.equal(isExplicitAuthFailure('token request timed out'), false);
+  assert.equal(isExplicitAuthFailure('fetch failed'), false);
 });

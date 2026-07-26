@@ -11,7 +11,11 @@ test('reauthorizes an account with credentials and no cookie', () => {
 
 test('reauthorizes explicit upstream authentication failures', () => {
   assert.equal(
-    shouldReauthorize({ ...recoverable, cookie: 'passport_token_key=expired' }, 'auth failed HTTP 401'),
+    shouldReauthorize(
+      { ...recoverable, cookie: 'passport_token_key=expired' },
+      'auth failed HTTP 401',
+      { authExpired: true }
+    ),
     true
   );
 });
@@ -20,7 +24,8 @@ test('reauthorizes LongCat Chinese login-required business errors', () => {
   assert.equal(
     shouldReauthorize(
       { ...recoverable, cookie: 'passport_token_key=expired' },
-      'session-create failed: 登录后才能继续对话哦~'
+      'session-create failed: 登录后才能继续对话哦~',
+      { authExpired: true }
     ),
     true
   );
@@ -33,12 +38,23 @@ test('does not open a browser for a transient network failure', () => {
   );
 });
 
+test('does not reauthorize from token-like text without confirmed total auth expiry', () => {
+  assert.equal(
+    shouldReauthorize(
+      { ...recoverable, cookie: 'passport_token_key=value' },
+      'session token invalid; user-current fetch timed out',
+      { authExpired: false }
+    ),
+    false
+  );
+});
+
 test('reauthorizes through temp mail when a mailbox JWT is missing', () => {
   assert.equal(
     shouldReauthorize(
       { email: 'user@example.com' },
       'auth failed HTTP 401',
-      { tempMailConfigured: true }
+      { tempMailConfigured: true, authExpired: true }
     ),
     true
   );

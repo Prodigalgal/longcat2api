@@ -79,6 +79,11 @@ export function initDb() {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  db.prepare(
+    `UPDATE accounts
+     SET last_renew_at = COALESCE(last_test_at, created_at), updated_at = ?
+     WHERE is_valid = 1 AND last_renew_at IS NULL`
+  ).run(Date.now());
   return db;
 }
 

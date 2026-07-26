@@ -55,6 +55,12 @@ export function isSessionRateLimit(value) {
   );
 }
 
+export function isExplicitAuthFailure(value) {
+  return /unauthor|forbidden|not\s*logged|login\s*required|未登录|登录后|token.*expired/i.test(
+    String(value || '')
+  );
+}
+
 export function buildOverseaPayload({ content, agentId = '1', reasonEnabled = 0, searchEnabled = 0 }) {
   const u = msgId();
   const a = msgId();
@@ -177,13 +183,17 @@ export async function createSession(account, { agentId = '1', proxyUrl } = {}) {
  */
 export async function probeAccount(account, { proxyUrl } = {}) {
   const cookie = accountCookieHeader(account);
-  if (!cookie) return { ok: false, detail: 'no cookie' };
+  if (!cookie) return { ok: false, detail: 'no cookie', authExpired: true };
 
   // prefer session-create (auth-sensitive)
   try {
     const data = await createSession(account, { proxyUrl });
     if (data.conversationId) {
-      return { ok: true, detail: `session ok: ${String(data.conversationId).slice(0, 12)}...` };
+      return {
+        ok: true,
+        detail: `session ok: ${String(data.conversationId).slice(0, 12)}...`,
+        authExpired: false,
+      };
     }
   } catch (e) {
     // fall through to user-current
@@ -197,28 +207,37 @@ export async function probeAccount(account, { proxyUrl } = {}) {
       });
       const text = await res.text();
       if (res.status === 401 || res.status === 403) {
-        return { ok: false, detail: `auth failed HTTP ${res.status}` };
+        return { ok: false, detail: `auth failed HTTP ${res.status}`, authExpired: true };
       }
       try {
         const j = JSON.parse(text);
         if (isAuthenticatedUserCurrent(j)) {
-          return { ok: true, detail: 'user-current ok' };
+          return { ok: true, detail: 'user-current ok', authExpired: false };
         }
         if (j.code === 0 && j.data?.loginStatus === 0) {
-          return { ok: false, detail: 'auth failed: user-current loginStatus=0' };
+          return {
+            ok: false,
+            detail: 'auth failed: user-current loginStatus=0',
+            authExpired: true,
+          };
         }
-        return { ok: false, detail: j.message || text.slice(0, 100) };
+        const detail = j.message || text.slice(0, 100);
+        return {
+          ok: false,
+          detail,
+          authExpired: isExplicitAuthFailure(detail),
+        };
       } catch {
         if (res.status >= 200 && res.status < 300) {
-          return { ok: true, detail: `HTTP ${res.status}` };
+          return { ok: true, detail: `HTTP ${res.status}`, authExpired: false };
         }
-        return { ok: false, detail: `HTTP ${res.status}: ${err1}` };
+        return { ok: false, detail: `HTTP ${res.status}: ${err1}`, authExpired: false };
       }
     } catch (e2) {
-      return { ok: false, detail: `${err1}; ${e2.message}` };
+      return { ok: false, detail: `${err1}; ${e2.message}`, authExpired: false };
     }
   }
-  return { ok: false, detail: 'unknown' };
+  return { ok: false, detail: 'unknown', authExpired: false };
 }
 
 export function isAuthenticatedUserCurrent(payload) {
