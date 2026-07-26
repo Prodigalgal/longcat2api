@@ -7,6 +7,7 @@ import {
 import { probeAccount } from './longcatClient.js';
 import { getProxyUrl } from './proxyPool.js';
 import { reauthorizeAccount } from './accountReauthorization.js';
+import { isTempMailConfigured } from './tempMail.js';
 
 let timer = null;
 let running = false;
@@ -15,8 +16,12 @@ let lastResults = [];
 let nextAt = null;
 const recoveryFlights = new Map();
 
-export function shouldReauthorize(acc, detail = '') {
-  if (!acc?.email || (!acc.password && !acc.mail_jwt)) return false;
+export function shouldReauthorize(
+  acc,
+  detail = '',
+  { tempMailConfigured = isTempMailConfigured(config.getTempMail()) } = {}
+) {
+  if (!acc?.email || (!acc.password && !acc.mail_jwt && !tempMailConfigured)) return false;
   if (!acc.cookie && !acc.passport_token) return true;
   return /auth|unauthor|forbidden|expired|invalid.*(?:cookie|token|session)|cookie|token|not\s*logged|log\s*in|login|登录|未登录|HTTP\s*(?:401|403)/i.test(
     String(detail || '')
@@ -37,6 +42,7 @@ async function recoverAccount(acc) {
       passport_token: recovered.passport_token,
       lxsdk_cuid: recovered.lxsdk_cuid || '',
       lxsdk_s: recovered.lxsdk_s || '',
+      mail_jwt: recovered.mail_jwt || acc.mail_jwt || '',
       enabled: true,
       is_valid: false,
       renew_error: '',

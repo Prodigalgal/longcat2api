@@ -33,6 +33,24 @@ test('does not open a browser for a transient network failure', () => {
   );
 });
 
-test('does not attempt recovery without saved login credentials', () => {
-  assert.equal(shouldReauthorize({ email: 'user@example.com' }, 'auth failed HTTP 401'), false);
+test('reauthorizes through temp mail when a mailbox JWT is missing', () => {
+  assert.equal(
+    shouldReauthorize(
+      { email: 'user@example.com' },
+      'auth failed HTTP 401',
+      { tempMailConfigured: true }
+    ),
+    true
+  );
+});
+
+test('does not attempt recovery without credentials or configured temp mail', () => {
+  assert.equal(
+    shouldReauthorize(
+      { email: 'user@example.com' },
+      'auth failed HTTP 401',
+      { tempMailConfigured: false }
+    ),
+    false
+  );
 });

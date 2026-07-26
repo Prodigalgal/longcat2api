@@ -15,6 +15,7 @@ import {
 import {
   isTempMailConfigured,
   listParsedMails,
+  refreshAddressJwt,
   waitForCode,
 } from './tempMail.js';
 
@@ -105,10 +106,10 @@ async function fillOtp(page, code) {
   throw new Error(`OTP input not found (visible=${visible.length})`);
 }
 
-async function mailboxSnapshot(mailConfig, account) {
-  if (!account.mail_jwt || !isTempMailConfigured(mailConfig)) return [];
+async function mailboxSnapshot(mailConfig, mailJwt) {
+  if (!mailJwt || !isTempMailConfigured(mailConfig)) return [];
   try {
-    const mails = await listParsedMails(mailConfig, account.mail_jwt, { limit: 30 });
+    const mails = await listParsedMails(mailConfig, mailJwt, { limit: 30 });
     return mails.map((mail) => mail.id || mail.message_id).filter(Boolean);
   } catch {
     return [];
@@ -188,12 +189,25 @@ async function reauthorizeOnce(
   { onLog, timeoutMs = envInt('LONGCAT2API_REAUTHORIZE_TIMEOUT_MS', 420000) } = {}
 ) {
   if (!account?.email) throw new Error('reauthorization requires account email');
-  if (!account.password && !account.mail_jwt) {
+  if (!account.password && !account.mail_jwt && !isTempMailConfigured(config.getTempMail())) {
     throw new Error('reauthorization requires saved password or mailbox token');
   }
 
   const mailConfig = config.getTempMail();
-  const ignoredMailIds = await mailboxSnapshot(mailConfig, account);
+  let mailJwt = account.mail_jwt || '';
+  if (isTempMailConfigured(mailConfig)) {
+    try {
+      if (!mailJwt) throw new Error('mail JWT missing');
+      await listParsedMails(mailConfig, mailJwt, { limit: 1 });
+    } catch (error) {
+      if (!mailJwt || /HTTP\s*(?:401|403)|unauthor|forbidden|JWT/i.test(error.message || '')) {
+        const refreshed = await refreshAddressJwt(mailConfig, account.email);
+        mailJwt = refreshed.jwt;
+        emit(onLog, 'refreshed temp-mail JWT');
+      }
+    }
+  }
+  const ignoredMailIds = await mailboxSnapshot(mailConfig, mailJwt);
   const proxyUrl = await ensureAuthProxy({ onLog });
   const launched = await launchBrowser({
     headless: process.env.LONGCAT2API_REGISTER_HEADLESS !== '0',
@@ -231,7 +245,7 @@ async function reauthorizeOnce(
       if (isLongcatUrl(page.url())) {
         const session = await collectSession(page, context, deadline);
         emit(onLog, `success token=${session.passport_token.slice(0, 8)}...`);
-        return { ok: true, ...session, engine };
+        return { ok: true, ...session, mail_jwt: mailJwt, engine };
       }
 
       const yoda = page.locator(SELECTORS.yoda).first();
@@ -264,7 +278,7 @@ async function reauthorizeOnce(
 
       const otp = page.locator(SELECTORS.otp).first();
       if (!otpSubmitted && (await otp.isVisible().catch(() => false))) {
-        if (!account.mail_jwt || !isTempMailConfigured(mailConfig)) {
+        if (!mailJwt || !isTempMailConfigured(mailConfig)) {
           throw new Error('login requires OTP but mailbox access is unavailable');
         }
         if (!authState.otpSent) {
@@ -276,7 +290,7 @@ async function reauthorizeOnce(
             continue;
           }
         }
-        const code = await waitForCode(mailConfig, account.mail_jwt, {
+        const code = await waitForCode(mailConfig, mailJwt, {
           timeout: Math.min(
             Math.max(30000, deadline - Date.now() - 30000),
             (Number(mailConfig.otp_timeout) || 240) * 1000
@@ -319,7 +333,7 @@ async function reauthorizeOnce(
       if (!passwordSubmitted && account.password) {
         await clickChoice(page, /continue with password|log in with password/i);
       }
-      if (!otpSubmitted && account.mail_jwt) {
+      if (!otpSubmitted && mailJwt) {
         await clickChoice(page, /verification code|email code|log in with code/i);
       }
       await sleep(800);

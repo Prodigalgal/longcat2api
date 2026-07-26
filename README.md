@@ -218,6 +218,8 @@ longcat2api/
 | POST | `/api/account/import-cookie` | 导入 Cookie |
 | POST | `/api/account/:id/test` | 测试账号 |
 | POST | `/api/accounts/renew-all` | 全量保活 |
+| POST | `/api/account/:id/refresh-mail-jwt` | 从 Temp Mail 重新签发并保存单账号邮箱 JWT |
+| POST | `/api/accounts/refresh-mail-jwts` | 批量重新签发邮箱 JWT（响应不含 JWT 明文） |
 | POST | `/api/account/auto-register` | 单次注册准备 |
 | POST | `/api/account/auto-register-batch` | 批量异步任务 |
 | GET/POST | `/api/temp-mail/*` | 临时邮箱 |

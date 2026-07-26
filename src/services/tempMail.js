@@ -83,6 +83,34 @@ export async function createAddress(cfg, { name, domain } = {}) {
   };
 }
 
+export async function refreshAddressJwt(cfg, email) {
+  if (!isTempMailConfigured(cfg)) throw new Error('请先配置临时邮箱 API 与管理口令');
+  const address = String(email || '').trim().toLowerCase();
+  if (!address.includes('@')) throw new Error('账号邮箱格式无效');
+  const b = base(cfg);
+  const query = new URLSearchParams({ query: address, limit: '50', offset: '0' });
+  const listRes = await fetch(`${b}/admin/address?${query}`, {
+    headers: headers(cfg, { admin: true }),
+  });
+  if (!listRes.ok) throw new Error(`查询临时邮箱失败 HTTP ${listRes.status}`);
+  const listed = await listRes.json();
+  const rows = listed.results || listed.addresses || listed.data || [];
+  const row = rows.find((item) =>
+    [item.address, item.name].some(
+      (value) => String(value || '').trim().toLowerCase() === address
+    )
+  );
+  if (row?.id == null) throw new Error(`临时邮箱不存在: ${address}`);
+
+  const jwtRes = await fetch(`${b}/admin/show_password/${encodeURIComponent(row.id)}`, {
+    headers: headers(cfg, { admin: true }),
+  });
+  if (!jwtRes.ok) throw new Error(`重新签发邮箱 JWT 失败 HTTP ${jwtRes.status}`);
+  const data = await jwtRes.json();
+  if (!data.jwt) throw new Error('临时邮箱未返回新 JWT');
+  return { jwt: data.jwt, address, address_id: row.id };
+}
+
 export async function listParsedMails(cfg, jwt, { limit = 20, offset = 0 } = {}) {
   const b = base(cfg);
   let res = await fetch(

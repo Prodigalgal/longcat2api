@@ -24,6 +24,7 @@ import {
   testConnection,
   isTempMailConfigured,
   listDomains,
+  refreshAddressJwt,
 } from '../services/tempMail.js';
 import {
   configureProxyPool,
@@ -254,6 +255,45 @@ router.post('/api/account/:id/renew', async (req, res) => {
 router.post('/api/accounts/renew-all', async (_req, res) => {
   const r = await renewAll();
   res.json(r);
+});
+
+router.post('/api/account/:id/refresh-mail-jwt', async (req, res) => {
+  const account = getAccount(req.params.id);
+  if (!account) return res.status(404).json({ ok: false, error: 'not found' });
+  if (!account.email) return res.status(400).json({ ok: false, error: 'account email required' });
+  try {
+    const refreshed = await refreshAddressJwt(config.getTempMail(), account.email);
+    updateAccount(account.id, { mail_jwt: refreshed.jwt });
+    res.json({
+      ok: true,
+      refreshed: true,
+      account: sanitizeAccount(getAccount(account.id)),
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+router.post('/api/accounts/refresh-mail-jwts', async (_req, res) => {
+  const accounts = listAccounts({ includeSecrets: false }).filter((account) => account.email);
+  const results = [];
+  for (const account of accounts) {
+    try {
+      const refreshed = await refreshAddressJwt(config.getTempMail(), account.email);
+      updateAccount(account.id, { mail_jwt: refreshed.jwt });
+      results.push({ id: account.id, ok: true, refreshed: true });
+    } catch (error) {
+      results.push({ id: account.id, ok: false, error: error.message });
+    }
+  }
+  const refreshed = results.filter((result) => result.ok).length;
+  res.json({
+    ok: refreshed === results.length,
+    total: results.length,
+    refreshed,
+    failed: results.length - refreshed,
+    results,
+  });
 });
 
 router.patch('/api/account/:id', (req, res) => {
