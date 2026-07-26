@@ -1,4 +1,4 @@
-name: Build and publish multi-arch image
+name: Build and publish ARM64 image
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
